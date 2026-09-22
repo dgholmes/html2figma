@@ -131,10 +131,26 @@ export async function walkElement(el: Element, parentAbs: Rect, ctx: WalkContext
     }
     return [await frameFor(el, cs, parentAbs, ctx)];
   } catch (e) {
-    const abs = absoluteRect(el, ctx.win);
     ctx.warnings.push(`Element <${el.tagName.toLowerCase()}> failed: ${e instanceof Error ? e.message : String(e)}`);
-    const geo: Geometry = { x: abs.x - parentAbs.x, y: abs.y - parentAbs.y, width: abs.width, height: abs.height, rotation: 0, abs };
-    return [{ ...baseNode(ctx, el, cs, geo, nameForElement(el, '(capture failed)')), type: 'frame', fills: [PLACEHOLDER_FILL], effects: [], children: [] }];
+    try {
+      const abs = absoluteRect(el, ctx.win);
+      const geo: Geometry = { x: abs.x - parentAbs.x, y: abs.y - parentAbs.y, width: abs.width, height: abs.height, rotation: 0, abs };
+      return [{ ...baseNode(ctx, el, cs, geo, nameForElement(el, '(capture failed)')), type: 'frame', fills: [PLACEHOLDER_FILL], effects: [], children: [] }];
+    } catch (fallbackError) {
+      // The fallback itself reads layout (absoluteRect) and derives node metadata (baseNode) from
+      // `cs`/`el`, either of which could theoretically throw too (e.g. a hostile
+      // getBoundingClientRect). Never let that escape walkElement: an uncaught throw here would
+      // propagate through walkChildren's `await` and abort the entire capture, which is exactly
+      // the "an element is silently dropped" outcome this whole fallback path exists to prevent.
+      // Fall back further to a hand-built, zero-size placeholder that cannot fail the same way.
+      ctx.warnings.push(`Element <${el.tagName.toLowerCase()}> placeholder fallback also failed: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`);
+      const placeholder: FrameNode = {
+        id: ctx.nextId(), name: `${el.tagName.toLowerCase()} (capture failed)`, x: 0, y: 0, width: 0, height: 0, rotation: 0,
+        visible: true, opacity: 1, blendMode: 'normal', fills: [PLACEHOLDER_FILL], radius: [0, 0, 0, 0], effects: [], clip: false,
+        meta: { tag: el.tagName.toLowerCase(), classes: [] }, type: 'frame', children: [],
+      };
+      return [placeholder];
+    }
   }
 }
 
@@ -190,6 +206,11 @@ export async function walkChildren(el: Element, parentAbs: Rect, ctx: WalkContex
   const out: Node[] = [];
   let fragments: TextFragment[] = [];
   const blockCs = ctx.win.getComputedStyle(el);
+  // `visibility` is inherited, so a fragment's own parent commonly reports 'hidden' simply
+  // because this whole block is hidden — that's not information loss, since the merged text
+  // node below carries the same `visible: false`. Only a *local* override back to visible/hidden
+  // partway through an otherwise-opposite block would be lost by merging; see fragmentForText.
+  const blockHidden = blockCs.visibility === 'hidden';
   const flush = () => {
     const t = textNodeFromFragments(fragments, parentAbs, blockCs, ctx);
     if (t) out.push(t);
@@ -197,7 +218,7 @@ export async function walkChildren(el: Element, parentAbs: Rect, ctx: WalkContex
   };
   for (const child of Array.from(el.childNodes)) {
     if (child.nodeType === 3) {
-      const frag = fragmentForText(child as Text, ctx);
+      const frag = fragmentForText(child as Text, ctx, blockHidden);
       if (frag) fragments.push(frag);
       continue;
     }
@@ -208,7 +229,7 @@ export async function walkChildren(el: Element, parentAbs: Rect, ctx: WalkContex
     const ccs = ctx.win.getComputedStyle(ce);
     if (ccs.display === 'none') continue;
     if ((ccs.display === 'inline' || ccs.display === 'contents') && !hasVisualBox(ccs) && !REPLACED.has(ce.tagName) && !isFormControl(ce) && onlyInlineContent(ce, ctx)) {
-      fragments.push(...collectInlineFragments(ce, ctx));
+      fragments.push(...collectInlineFragments(ce, ctx, blockHidden));
       continue;
     }
     flush();
@@ -231,24 +252,30 @@ function onlyInlineContent(el: Element, ctx: WalkContext): boolean {
   return true;
 }
 
-function collectInlineFragments(el: Element, ctx: WalkContext): TextFragment[] {
+function collectInlineFragments(el: Element, ctx: WalkContext, blockHidden: boolean): TextFragment[] {
   const out: TextFragment[] = [];
   for (const child of Array.from(el.childNodes)) {
-    if (child.nodeType === 3) { const f = fragmentForText(child as Text, ctx); if (f) out.push(f); }
+    if (child.nodeType === 3) { const f = fragmentForText(child as Text, ctx, blockHidden); if (f) out.push(f); }
     else if (child.nodeType === 1) {
       const ce = child as Element;
       if (ce.tagName === 'BR') out.push({ text: '', isBreak: true, style: runStyleFromComputed(ctx.win.getComputedStyle(el), ctx.color, ctx.isFontAvailable), rect: null, whiteSpace: 'normal' });
-      else if (!SKIP_TAGS.has(ce.tagName) && ctx.win.getComputedStyle(ce).display !== 'none') out.push(...collectInlineFragments(ce, ctx));
+      else if (!SKIP_TAGS.has(ce.tagName) && ctx.win.getComputedStyle(ce).display !== 'none') out.push(...collectInlineFragments(ce, ctx, blockHidden));
     }
   }
   return out;
 }
 
-function fragmentForText(text: Text, ctx: WalkContext): TextFragment | null {
+function fragmentForText(text: Text, ctx: WalkContext, blockHidden: boolean): TextFragment | null {
   const parent = text.parentElement;
   if (!parent) return null;
   const cs = ctx.win.getComputedStyle(parent);
-  if (cs.visibility === 'hidden') return null;
+  // `visibility` is inherited, so a hidden immediate parent is expected — and harmless — whenever
+  // the enclosing block being flushed is itself hidden: textNodeFromFragments marks the merged
+  // node `visible: false` and the text is preserved for later reveal. What we must still drop is a
+  // *locally* hidden run (an explicit `visibility: hidden` override, or inheritance from a nearer
+  // hidden ancestor than the block) inside an otherwise-visible block: a single merged text node
+  // has no per-character visibility, so keeping it would render normally-hidden copy as if shown.
+  if (cs.visibility === 'hidden' && !blockHidden) return null;
   const raw = text.data;
   if (!raw) return null;
   const range = ctx.doc.createRange();
@@ -265,7 +292,7 @@ function textNodeFromFragments(fragments: TextFragment[], parentAbs: Rect, block
   return {
     id: ctx.nextId(), name: nameForText(assembled.characters), type: 'text',
     x: r.x - parentAbs.x, y: r.y - parentAbs.y, width: r.width + 1, height: r.height, rotation: 0,
-    visible: true, opacity: 1, blendMode: 'normal', fills: [], radius: [0, 0, 0, 0],
+    visible: blockCs.visibility !== 'hidden', opacity: 1, blendMode: 'normal', fills: [], radius: [0, 0, 0, 0],
     effects: parseShadowList(blockCs.textShadow, ctx.color, false), clip: false,
     meta: { tag: 'text', classes: [] }, characters: assembled.characters, runs: assembled.runs,
     align: mapTextAlign(blockCs.textAlign, blockCs.direction), verticalAlign: 'top',

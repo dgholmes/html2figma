@@ -34,6 +34,17 @@ beforeEach(() => {
     const r = rectOf(parent?.closest('[data-text-rect]') ? { getAttribute: () => parent!.closest('[data-text-rect]')!.getAttribute('data-text-rect') } as unknown as Element : null);
     return (r.width ? [r] : []) as unknown as DOMRectList;
   });
+  // walk.ts's pseudoNode() legitimately probes `getComputedStyle(el, '::before'|'::after')` on every
+  // frameFor call, exactly as it should on a real browser. jsdom, however, doesn't implement
+  // pseudo-element computed styles: window.getComputedStyle unconditionally logs a "Not implemented"
+  // console error whenever a non-empty pseudo-element argument is passed, then falls through to
+  // compute (and return) the element's own style regardless — the pseudo argument never actually
+  // affects the result in this jsdom version. So stripping it before delegating to the real
+  // implementation produces byte-identical output with none of the console noise. This only touches
+  // the test harness's window.getComputedStyle binding, not walk.ts's calls or any other console
+  // method, so genuine errors/warnings from elsewhere still surface normally.
+  const realGetComputedStyle = window.getComputedStyle.bind(window);
+  vi.spyOn(window, 'getComputedStyle').mockImplementation((elt: Element) => realGetComputedStyle(elt));
   document.body.innerHTML = '';
 });
 afterEach(() => vi.restoreAllMocks());
@@ -118,11 +129,42 @@ describe('walkElement', () => {
   });
 
   it('records fixed positioning and hidden visibility', async () => {
-    document.body.innerHTML = `<header data-rect="0,0,1000,96" style="position: fixed; visibility: hidden"><span>x</span></header>`;
+    document.body.innerHTML = `<header data-rect="0,0,1000,96" data-text-rect="0,0,20,20" style="position: fixed; visibility: hidden"><span>x</span></header>`;
     const header = (await walkElement(document.querySelector('header')!, ROOT, makeCtx()))[0] as FrameNode;
     expect(header.meta.position).toBe('fixed');
     expect(header.visible).toBe(false);
     expect(header.name).toBe('header (fixed)');
+    const text = header.children[0] as TextNode;
+    expect(text.characters).toBe('x');
+    expect(text.visible).toBe(false);
+  });
+
+  it('emits a text node for a hidden block, marked not visible', async () => {
+    document.body.innerHTML = `<p data-rect="0,0,300,20" data-text-rect="0,0,300,20" style="visibility: hidden">Some text</p>`;
+    const p = (await walkElement(document.querySelector('p')!, ROOT, makeCtx()))[0] as FrameNode;
+    expect(p.visible).toBe(false);
+    const text = p.children[0] as TextNode;
+    expect(text.type).toBe('text');
+    expect(text.characters).toBe('Some text');
+    expect(text.visible).toBe(false);
+  });
+
+  it('still emits text nested under a hidden ancestor through a hoisted plain inline span', async () => {
+    document.body.innerHTML = `<div data-rect="0,0,300,20" data-text-rect="0,0,300,20" style="visibility: hidden"><span>hidden text</span></div>`;
+    const div = (await walkElement(document.querySelector('div')!, ROOT, makeCtx()))[0] as FrameNode;
+    expect(div.visible).toBe(false);
+    const text = div.children[0] as TextNode;
+    expect(text.characters).toBe('hidden text');
+    expect(text.visible).toBe(false);
+  });
+
+  it('drops a locally hidden inline run instead of merging it into an otherwise-visible text node', async () => {
+    document.body.innerHTML = `<p data-rect="0,0,300,20" data-text-rect="0,0,300,20">visible <span style="visibility: hidden">hidden</span> text</p>`;
+    const p = (await walkElement(document.querySelector('p')!, ROOT, makeCtx()))[0] as FrameNode;
+    expect(p.visible).toBe(true);
+    const text = p.children[0] as TextNode;
+    expect(text.characters).toBe('visible text');
+    expect(text.visible).toBe(true);
   });
 
   it('adds synthetic text for inputs from placeholder', async () => {
