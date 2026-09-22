@@ -4,18 +4,33 @@
 // IntersectionObserver reveals them on scroll; a commercial capture tool that snapshots the
 // page without scrolling captures them invisible and produces large blank bands. This script
 // captures the real, live site with the real capture bundle (same code path as production) and
-// asserts every major section survived with visible text, no blank bands, the fixed header at
-// y=0, real video frames/posters instead of placeholders, and oklch() backgrounds resolved to
-// real colors.
+// asserts every major section survived with visible, non-hidden-by-opacity text, no blank bands,
+// the fixed header at y=0, real video frames/posters instead of placeholders, and oklch()
+// backgrounds resolved to real colors.
 //
-// It then feeds the SAME captured document through the Figma plugin's Builder (see the second
-// half in ../../figma-plugin/test/acceptance.layrd.test.ts) to prove the import half works too.
+// On success it then spawns the second half — a Vitest test (packages/figma-plugin/test/
+// acceptance.layrd.test.ts) that feeds the SAME captured document through the Figma plugin's
+// Builder to prove the import half works too — and this script's exit code is that test's exit
+// code. On SKIP (site unreachable) or a capture-side check failure, the second half is not run
+// at all: see "Stale-capture handling" below for why.
 //
 // Usage: npm run test:acceptance
 // Network required. If layrd.pro is unreachable, this prints a SKIPPED message and exits 0 so
 // the suite does not break when offline (e.g. in a sandboxed CI runner).
+//
+// Stale-capture handling: this script is the only writer of CAPTURE_PATH, and it deletes any
+// existing file there before doing anything else, every run. That means the file can only ever
+// be in one of two states when the Vitest half (or a plain `npm test`, which also picks up that
+// test file) looks at it: freshly written by a capture that just finished, genuinely passing its
+// own checks — or absent. There is no third state where a SKIPPED/failed run leaves a stale file
+// behind for a later, unrelated `vitest run` to silently pass against. The RUN_ID envelope field
+// plus the H2F_ACCEPTANCE_RUN_ID env var passed to the spawned Vitest process below are a second,
+// belt-and-suspenders check for the specific case where this script's two halves are run
+// together: if a file somehow exists but wasn't written by *this* invocation, the Vitest half
+// fails loudly instead of quietly trusting it.
+import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,9 +38,15 @@ import { fileURLToPath } from 'node:url';
 const URL = 'https://layrd.pro/';
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = resolve(here, '..');
+const repoRoot = resolve(pkg, '../..');
 
 // Shared with packages/figma-plugin/test/acceptance.layrd.test.ts — keep the path in sync.
 export const CAPTURE_PATH = join(tmpdir(), 'h2f-acceptance', 'layrd.captured.json');
+const RUN_ID = randomUUID();
+
+// Delete any capture left over from a previous run FIRST, before the network is even touched, so
+// a SKIPPED or failed run this time can never be followed by a pass on old data (see header).
+if (existsSync(CAPTURE_PATH)) rmSync(CAPTURE_PATH, { force: true });
 
 const failures = [];
 const check = (name, cond, detail = '') => {
@@ -52,11 +73,13 @@ try {
   response = await page.goto(URL, { waitUntil: 'load', timeout: 30000 });
 } catch (e) {
   console.log(`SKIPPED: layrd.pro is unreachable (${e instanceof Error ? e.message : String(e)}). This is not a failure — the suite does not require network access.`);
+  console.log('SKIPPED: the Figma-import half was not run either (no fresh capture to feed it).');
   await browser.close();
   process.exit(0);
 }
 if (!response || !response.ok()) {
   console.log(`SKIPPED: layrd.pro responded with status ${response ? response.status() : '(no response)'}, not treating as a failure.`);
+  console.log('SKIPPED: the Figma-import half was not run either (no fresh capture to feed it).');
   await browser.close();
   process.exit(0);
 }
@@ -101,6 +124,25 @@ function findSection(doc, m) {
   return allNodes(doc.root).find((n) => n.type === 'frame' && n.meta?.tag === m.tag && (m.id ? n.meta.id === m.id : (n.meta.classes || []).includes(m.class)));
 }
 function hasImageFill(n) { return (n.fills || []).some((f) => f.type === 'image'); }
+// Depth-first search for the first text node whose (whitespace-normalized) characters contain
+// `phrase`, returning the full ancestor path from `root` (inclusive) down to that text node
+// (inclusive) — so callers can check opacity along the whole chain, not just the leaf. `opacity`
+// is the literal subject of the layrd.pro regression (sections hidden via `opacity: 0` until an
+// IntersectionObserver reveals them): a text node can be `visible` (CSS `visibility`) with
+// nonzero width/height while still being invisible on screen because it — or a parent frame —
+// was left at opacity 0, e.g. if the force-reveal fallback in prepare.ts regressed. `visible`
+// alone can't catch that; this can.
+function findTextPath(root, phrase) {
+  const path = [];
+  function dfs(node) {
+    path.push(node);
+    if (node.type === 'text' && normalize(node.characters).includes(phrase)) return true;
+    if (node.children) for (const c of node.children) if (dfs(c)) return true;
+    path.pop();
+    return false;
+  }
+  return dfs(root) ? path.slice() : null;
+}
 
 // ---- 3: every major section shows its copy, and (4) no blank bands --------------------------
 const SECTIONS = [
@@ -117,15 +159,23 @@ const SECTIONS = [
   { label: 'waitlist ("Leave with the post")', match: { tag: 'section', id: 'waitlist' }, phrase: 'Leave with the post' },
 ];
 
+const OPACITY_THRESHOLD = 0.01;
 const emptySections = [];
 for (const spec of SECTIONS) {
   const section = findSection(doc, spec.match);
   check(`section found: ${spec.label}`, !!section, section ? '' : JSON.stringify(spec.match));
   if (!section) { emptySections.push(spec.label); continue; }
-  const descendants = allNodes(section);
-  const textHit = descendants.find((n) => n.type === 'text' && normalize(n.characters).includes(spec.phrase));
+
+  const path = findTextPath(section, spec.phrase);
+  const textHit = path ? path[path.length - 1] : null;
   check(`text visible: ${spec.label}`, !!textHit && textHit.visible === true && textHit.width > 0 && textHit.height > 0,
     textHit ? `(visible=${textHit.visible} w=${textHit.width.toFixed(1)} h=${textHit.height.toFixed(1)})` : `(no text node containing "${spec.phrase}")`);
+
+  const dim = path ? path.filter((n) => !(n.opacity > OPACITY_THRESHOLD)) : [];
+  check(`text and ancestors not opacity-hidden: ${spec.label}`, !!path && dim.length === 0,
+    dim.length ? `(${dim.map((n) => `${n.name} opacity=${n.opacity}`).join('; ')})` : '');
+
+  const descendants = allNodes(section);
   const notBlank = descendants.some((n) => n.type === 'text' || hasImageFill(n));
   check(`no blank band: ${spec.label}`, notBlank);
   if (!notBlank) emptySections.push(spec.label);
@@ -168,13 +218,26 @@ console.log(`document JSON size: ${(jsonSize / 1024 / 1024).toFixed(2)} MB`);
 console.log(`capture warnings (${doc.warnings.length}):`);
 for (const w of doc.warnings) console.log(`  - ${w}`);
 
-// ---- write the captured document for the plugin-import half of the acceptance test -----------
-mkdirSync(dirname(CAPTURE_PATH), { recursive: true });
-writeFileSync(CAPTURE_PATH, JSON.stringify(doc));
-console.log(`\nWrote captured document to ${CAPTURE_PATH} for the Figma-import half of the acceptance test.`);
-
 if (failures.length) {
   console.error(`\n${failures.length} capture-side check(s) failed`);
+  console.error('The Figma-import half was not run either — it would only be testing against known-bad data.');
   process.exit(1);
 }
 console.log('\nall capture-side acceptance checks passed');
+
+// ---- write the captured document for the plugin-import half of the acceptance test -----------
+// Only reached when every capture-side check above passed. RUN_ID is echoed to the child Vitest
+// process via an env var below, so that half can confirm the file it reads is the one this exact
+// run just wrote (see the "Stale-capture handling" note at the top of this file).
+mkdirSync(dirname(CAPTURE_PATH), { recursive: true });
+writeFileSync(CAPTURE_PATH, JSON.stringify({ runId: RUN_ID, capturedAt: new Date().toISOString(), document: doc }));
+console.log(`Wrote captured document to ${CAPTURE_PATH} (runId ${RUN_ID}) for the Figma-import half of the acceptance test.`);
+
+// ---- second half: feed the same document through the Figma plugin's Builder -------------------
+console.log('\nRunning the Figma-import half (packages/figma-plugin/test/acceptance.layrd.test.ts)…');
+const vitestResult = spawnSync(
+  process.platform === 'win32' ? 'npx.cmd' : 'npx',
+  ['vitest', 'run', 'packages/figma-plugin/test/acceptance.layrd.test.ts'],
+  { cwd: repoRoot, stdio: 'inherit', shell: true, env: { ...process.env, H2F_ACCEPTANCE_RUN_ID: RUN_ID } },
+);
+process.exit(vitestResult.status ?? 1);

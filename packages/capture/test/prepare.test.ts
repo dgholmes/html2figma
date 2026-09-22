@@ -45,6 +45,30 @@ describe('preparePage', () => {
     expect(result.warnings).toEqual([]);
   });
 
+  // A page with `scroll-behavior: smooth` turns the final `scrollTo(0, 0)` reset into an async
+  // animation, so `win.scrollY` can still be nonzero when geometry is captured right after
+  // preparePage returns — which mispositions any position:fixed/sticky element (see prepare.ts).
+  // This must hold on BOTH branches: revealAnimations is a real user-facing toggle (the extension
+  // popup's "Reveal scroll animations" checkbox), and turning it off still ends in a scroll reset
+  // that geometry capture depends on.
+  it.each([true, false])('forces instant scrolling (scroll-behavior: auto) on <html> and <body> and restores it afterwards, revealAnimations=%s', async (revealAnimations) => {
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    document.documentElement.setAttribute('style', 'scroll-behavior: smooth');
+    document.body.innerHTML = '<div id="content"></div>';
+    document.body.setAttribute('style', 'scroll-behavior: smooth');
+    const beforeHtml = document.documentElement.getAttribute('style');
+    const beforeBody = document.body.getAttribute('style');
+
+    const result = await preparePage(window, document.documentElement, { revealAnimations });
+
+    expect(document.documentElement.style.getPropertyValue('scroll-behavior')).toBe('auto');
+    expect(document.body.style.getPropertyValue('scroll-behavior')).toBe('auto');
+
+    result.restore();
+    expect(document.documentElement.getAttribute('style')).toBe(beforeHtml);
+    expect(document.body.getAttribute('style')).toBe(beforeBody);
+  }, 15000);
+
   it('restores forced styles even when preparation throws partway through', async () => {
     vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
     document.body.innerHTML = `
