@@ -1,0 +1,27 @@
+{
+  "name": "html2figma",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @h2f/extension -w @h2f/figma-plugin",
+    "dev:extension": "npm run dev -w @h2f/extension",
+    "dev:plugin": "npm run dev -w @h2f/figma-plugin",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:browser": "node packages/capture/test-browser/run.mjs",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.138.0",
+    "@types/chrome": "^0.3.0",
+    "@types/node": "^26.6.2",
+    "esbuild": "^0.28.2",
+    "jsdom": "^30.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1"
+  }
+}

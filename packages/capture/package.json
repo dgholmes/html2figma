@@ -1,0 +1,13 @@
+{
+  "name": "@h2f/capture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "node build.mjs"
+  },
+  "dependencies": { "@h2f/schema": "*" }
+}

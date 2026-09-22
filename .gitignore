@@ -1,0 +1,5 @@
+node_modules/
+dist/
+*.h2f.json
+.playwright/
+.superpowers/
