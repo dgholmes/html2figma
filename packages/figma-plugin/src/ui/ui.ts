@@ -130,7 +130,7 @@ importBtn.addEventListener('click', () => {
   });
 });
 
-window.onmessage = (event: MessageEvent<{ pluginMessage?: MainToUi }>) => {
+window.onmessage = async (event: MessageEvent<{ pluginMessage?: MainToUi }>) => {
   const msg = event.data?.pluginMessage;
   if (!msg) return;
   switch (msg.type) {
@@ -146,5 +146,14 @@ window.onmessage = (event: MessageEvent<{ pluginMessage?: MainToUi }>) => {
       break;
     }
     case 'error': setProgress('Import failed', 0, 1); setLog(msg.message, true); importBtn.disabled = false; break;
+    case 'needFallback': {
+      // I8 follow-up: main asked for a specific svg to be rasterized reactively, because
+      // figma.createNodeFromSvg just failed on it and no proactive fallback was supplied for it
+      // (it wasn't referenced by any ImagePaint). Rasterize on demand and hand the bytes back so
+      // that node degrades to a real image fill instead of a red "import failed" placeholder.
+      const bytes = await rasterizeSvg(msg.svg, msg.width, msg.height);
+      post({ type: 'fallback', id: msg.id, bytes });
+      break;
+    }
   }
 };

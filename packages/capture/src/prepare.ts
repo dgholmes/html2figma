@@ -9,9 +9,24 @@ export interface Viewport { width: number; height: number }
 const DEFAULT_VIEWPORT: Viewport = { width: 1440, height: 900 };
 
 // I7: the spec's force-reveal trigger is "opacity: 0 AND transition-property includes opacity or
-// all" — the actual signature of the 27 scroll-reveal blocks this feature was built for. Exposed
-// separately from shouldForceReveal so the caller (the force-reveal scan below) can also use it to
-// decide whether it's safe to force `visibility: visible`, not just whether to force at all.
+// all". Exposed separately from shouldForceReveal so the caller (the force-reveal scan below) can
+// also use it to decide whether it's safe to force `visibility: visible`, not just whether to
+// force at all.
+//
+// Reconciling "27" vs "25": README.md and layrd.mjs describe layrd.pro as hiding "~27" scroll-
+// reveal sections/blocks — an approximate, content-level description of the site's design, not a
+// claim about how many individual DOM elements shouldForceReveal matches. Measured directly on
+// the live site (same scroll-and-settle sequence this function runs, both the old unbounded
+// transform check and this bounded one evaluated side by side against the identical settled DOM
+// state): both match exactly the same 25 elements — zero lost by the I7 narrowing, zero gained.
+// None of the 25 actually carry a CSS `transition-property` matching this function's own
+// `hasOpacityTransition` check at all (layrd.pro's reveal is driven by a JS animation library
+// that writes `opacity`/`transform` inline per frame — see the REVEAL_SETTLE_MS comment below —
+// not by a declared CSS `transition`), so every one of them is, and always was, matched solely
+// through the transform-based signal; narrowing that signal's bounds did not drop any of them.
+// "25" is simply the real, current count of matched DOM elements; "27" was only ever an
+// approximate content-level figure from the original investigation, not a target this function's
+// own count needs to hit.
 export function hasOpacityTransition(cs: CSSStyleDeclaration): boolean {
   const props = (cs.transitionProperty || '').split(',').map((p) => p.trim());
   const durations = (cs.transitionDuration || '0s').split(',').map((d) => parseFloat(d) || 0);

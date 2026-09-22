@@ -8,6 +8,14 @@ export interface BuilderDeps {
   fonts: FontResolver;
   warnings: string[];
   onProgress: (done: number) => void;
+  // I8 follow-up: a proactive `fallback` is only ever supplied for svg assets an ImagePaint
+  // references (see ui.ts's imagePaintAssetIds) — most svgs parse fine and were never rasterized
+  // ahead of time. When one of those DOES fail to parse in createVector below and has no
+  // proactive fallback, this lets it ask the UI (the only side with DOM/canvas access) to
+  // rasterize that one svg on demand, so the failure still degrades to a raster fill instead of
+  // a red "import failed" placeholder — without paying the upload cost for every svg up front.
+  // Optional so tests/callers that don't need the reactive path can omit it.
+  requestFallback?: (id: string, svg: string, width: number, height: number) => Promise<Uint8Array | undefined>;
 }
 
 const ALIGN: Record<H2FText['align'], 'LEFT' | 'CENTER' | 'RIGHT' | 'JUSTIFIED'> = { left: 'LEFT', center: 'CENTER', right: 'RIGHT', justified: 'JUSTIFIED' };
@@ -154,12 +162,24 @@ export class Builder {
       const s = Math.min(sx, sy);
       if (Number.isFinite(s) && s > 0 && Math.abs(s - 1) > 1e-6) fig.rescale(s);
     } catch (e) {
-      if (!entry.fallback) throw e;
+      // I8 follow-up: resolve a raster fallback for this failing svg, preferring (in order) an
+      // already-registered image (this asset already got a hash — from a proactive ImagePaint
+      // registration, or from a previous vector node that hit this same catch block for the same
+      // repeated asset id), then a proactively-supplied fallback, then a reactive UI round trip.
+      // This means a repeated icon that fails to parse only ever gets rasterized and uploaded
+      // once, however many times it's used.
+      let hash = this.deps.images.get(node.assetId);
+      if (!hash) {
+        const fallback = entry.fallback ?? (this.deps.requestFallback ? await this.deps.requestFallback(node.assetId, entry.svg, node.width, node.height) : undefined);
+        if (!fallback) throw e;
+        hash = figma.createImage(fallback).hash;
+        this.deps.images.set(node.assetId, hash);
+      }
       this.deps.warnings.push(`SVG "${node.name}" could not be parsed by Figma; using a rasterized copy.`);
       fig = figma.createFrame();
       parent.appendChild(fig);
       this.pendingNode = fig;
-      fig.fills = [{ type: 'IMAGE', imageHash: figma.createImage(entry.fallback).hash, scaleMode: 'FIT' }];
+      fig.fills = [{ type: 'IMAGE', imageHash: hash, scaleMode: 'FIT' }];
     }
     this.place(fig, node);
     // Both branches above produce a real FrameNode (createNodeFromSvg wraps the vector shapes in

@@ -14,7 +14,11 @@ export interface ImportState {
 
 const post = (msg: MainToUi) => figma.ui.postMessage(msg);
 
-export async function importDocument(doc: H2FDocument, state: ImportState): Promise<{ root: FrameNode; warnings: string[]; nodeCount: number }> {
+export async function importDocument(
+  doc: H2FDocument,
+  state: ImportState,
+  requestFallback?: (id: string, svg: string, width: number, height: number) => Promise<Uint8Array | undefined>,
+): Promise<{ root: FrameNode; warnings: string[]; nodeCount: number }> {
   const warnings = [...doc.warnings, ...state.assetWarnings];
   post({ type: 'progress', stage: 'Loading fonts', done: 0, total: 1 });
   const fonts = new FontResolver(await figma.listAvailableFontsAsync());
@@ -26,7 +30,7 @@ export async function importDocument(doc: H2FDocument, state: ImportState): Prom
     await figma.setCurrentPageAsync(page);
   }
   const total = countNodes(doc.root);
-  const builder = new Builder({ images: state.images, svgs: state.svgs, fonts, warnings, onProgress: (done) => post({ type: 'progress', stage: 'Building layers', done, total }) });
+  const builder = new Builder({ images: state.images, svgs: state.svgs, fonts, warnings, onProgress: (done) => post({ type: 'progress', stage: 'Building layers', done, total }), requestFallback });
   const root = (await builder.build(doc.root, page)) as FrameNode;
   let host = '';
   try { host = new URL(doc.source.url).hostname; } catch { /* ignore */ }
@@ -41,6 +45,16 @@ if (typeof figma !== 'undefined' && typeof __html__ !== 'undefined') {
   const state: ImportState = { images: new Map(), svgs: new Map(), options: { newPage: true }, assetWarnings: [] };
   let expected = 0;
   let received = 0;
+  // I8 follow-up: at most one 'needFallback' round trip is ever in flight — the Builder is
+  // single-threaded through the tree (createFrame awaits each child's build() in turn before
+  // moving on, same invariant I10 relies on for `pendingNode`), so a single pending resolver is
+  // sufficient; there's never a second request queued behind it.
+  let pendingFallback: { id: string; resolve: (bytes: Uint8Array | undefined) => void } | null = null;
+  const requestFallback = (id: string, svg: string, width: number, height: number): Promise<Uint8Array | undefined> =>
+    new Promise((resolve) => {
+      pendingFallback = { id, resolve };
+      post({ type: 'needFallback', id, svg, width, height });
+    });
   figma.ui.onmessage = async (msg: UiToMain) => {
     try {
       switch (msg.type) {
@@ -84,11 +98,17 @@ if (typeof figma !== 'undefined' && typeof __html__ !== 'undefined') {
           post({ type: 'progress', stage: 'Receiving assets', done: received, total: Math.max(1, expected) });
           break;
         case 'tree': {
-          const result = await importDocument(msg.document, state);
+          const result = await importDocument(msg.document, state, requestFallback);
           post({ type: 'done', nodeCount: result.nodeCount, warnings: result.warnings });
           figma.notify(`html2figma: imported ${result.nodeCount} layers`);
           break;
         }
+        case 'fallback':
+          if (pendingFallback && pendingFallback.id === msg.id) {
+            pendingFallback.resolve(msg.bytes);
+            pendingFallback = null;
+          }
+          break;
         case 'cancel':
           figma.closePlugin();
           break;
