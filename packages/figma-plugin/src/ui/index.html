@@ -1,0 +1,41 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  :root { font: 12px/1.45 Inter, system-ui, sans-serif; color-scheme: light dark; }
+  body { margin: 0; padding: 14px; background: var(--figma-color-bg, #fff); color: var(--figma-color-text, #222); }
+  h1 { font-size: 14px; margin: 0 0 10px; }
+  .drop { border: 1.5px dashed var(--figma-color-border, #bbb); border-radius: 10px; padding: 22px 14px; text-align: center; cursor: pointer; }
+  .drop.over { border-color: var(--figma-color-border-brand, #18a0fb); background: var(--figma-color-bg-brand-tertiary, #e5f4ff); }
+  .drop small { display: block; opacity: .6; margin-top: 4px; }
+  textarea { width: 100%; box-sizing: border-box; height: 56px; margin-top: 8px; font: 11px/1.3 ui-monospace, monospace; border-radius: 6px; border: 1px solid var(--figma-color-border, #ccc); background: transparent; color: inherit; }
+  .info { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: var(--figma-color-bg-secondary, #f3f3f3); font-size: 11px; }
+  .info div { display: flex; justify-content: space-between; gap: 8px; }
+  .info div span:last-child { opacity: .7; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; }
+  label { display: block; margin-top: 10px; }
+  button { font: inherit; width: 100%; margin-top: 10px; padding: 8px; border-radius: 6px; border: 0; background: var(--figma-color-bg-brand, #18a0fb); color: #fff; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: default; }
+  .bar { height: 6px; border-radius: 3px; margin-top: 12px; background: var(--figma-color-bg-secondary, #eee); overflow: hidden; }
+  .bar div { height: 100%; width: 0; background: var(--figma-color-bg-brand, #18a0fb); transition: width .15s; }
+  #stage { margin-top: 6px; font-size: 11px; opacity: .75; min-height: 14px; }
+  pre { font-size: 10.5px; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow: auto; margin: 8px 0 0; padding: 6px 8px; border-radius: 6px; background: var(--figma-color-bg-secondary, #f3f3f3); }
+  .hidden { display: none; }
+  .error { color: var(--figma-color-text-danger, #c00); }
+</style></head>
+<body>
+  <h1>html2figma</h1>
+  <div id="drop" class="drop" tabindex="0">Drop a <b>.h2f.json</b> file here or click to choose<small>Captured with the html2figma Chrome extension</small></div>
+  <input id="file" type="file" accept=".json,application/json" class="hidden">
+  <textarea id="paste" placeholder="…or paste the copied JSON here"></textarea>
+  <div id="info" class="info hidden">
+    <div><span>Page</span><span id="info-title"></span></div>
+    <div><span>URL</span><span id="info-url"></span></div>
+    <div><span>Viewport</span><span id="info-viewport"></span></div>
+    <div><span>Layers / assets</span><span id="info-counts"></span></div>
+  </div>
+  <label><input id="opt-newpage" type="checkbox" checked> Create on a new page</label>
+  <button id="import" disabled>Import into Figma</button>
+  <div class="bar"><div id="bar-fill"></div></div>
+  <div id="stage"></div>
+  <pre id="log" class="hidden"></pre>
+  <script>/*__UI_JS__*/</script>
+</body></html>

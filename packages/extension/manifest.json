@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "html2figma capture",
+  "description": "Capture the current page as an .h2f.json design file for the html2figma Figma plugin.",
+  "version": "0.1.0",
+  "action": { "default_popup": "popup.html", "default_title": "Capture page for Figma" },
+  "background": { "service_worker": "background.js", "type": "module" },
+  "permissions": ["activeTab", "scripting", "storage", "clipboardWrite"],
+  "host_permissions": ["<all_urls>"]
+}

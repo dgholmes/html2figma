@@ -1,0 +1,10 @@
+{
+  "name": "html2figma",
+  "id": "html2figma-local-dev",
+  "api": "1.0.0",
+  "main": "main.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "documentAccess": "dynamic-page",
+  "networkAccess": { "allowedDomains": ["none"] }
+}
