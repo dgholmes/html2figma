@@ -42,7 +42,7 @@ of extension APIs so a URL mode can reuse it later.
 
 ## 4. Repository layout
 
-npm workspaces monorepo, TypeScript throughout, Vite for both bundles, Vitest for
+npm workspaces monorepo, TypeScript throughout, esbuild for both bundles (the Figma UI must be one inline HTML file and the content script a classic IIFE), Vitest for
 tests.
 
 ```
@@ -251,10 +251,10 @@ Cross-origin `<iframe>` becomes a gray frame named `iframe (not captured)`.
 ### 6.3 Geometry (`geometry.ts`)
 
 - Base rect: `getBoundingClientRect()` plus `scrollX/scrollY`.
-- Parent-relative: subtract the parent frame's absolute rect. Children of a
-  scrolling container are offset by the container's `scrollLeft/scrollTop` so the
-  visible region matches.
-- Rotation: parse the computed `transform` matrix. If it decomposes to
+- Parent-relative: subtract the nearest emitted ancestor frame's absolute rect. Children of a
+  scrolling container need no extra offset because bounding rects already
+  reflect the scroll position.
+- Rotation (leaf elements only: elements with no element children other than media, because children of a rotated container would need re-projection into its local space): parse the computed `transform` matrix. If it decomposes to
   translate + uniform scale + rotation (no skew), emit `rotation` in degrees and use
   `offsetWidth/offsetHeight * scale` as the size, positioning by the transformed
   center. Otherwise fall back to the axis-aligned bounding box with `rotation: 0`.
@@ -489,4 +489,4 @@ video decoding do not run in background tabs); the popup states this.
   `packages/extension/dist`.
 - Figma desktop: Plugins -> Development -> Import plugin from manifest ->
   `packages/figma-plugin/dist/manifest.json`.
-- `npm run dev` watches both packages.
+- `npm run dev:extension` and `npm run dev:plugin` rebuild on change.
