@@ -84,11 +84,16 @@ export async function assetFromUrl(url: string, ctx: MediaContext, origin: Image
     try { fetched = await ctx.loader.fetchAsBase64(url); } catch { fetched = null; }
   }
   if (fetched && looksLikeSvg(fetched)) {
-    const svg = decodeBase64Utf8(fetched.data);
-    const dims = svgIntrinsicSize(svg) ?? { width: fallbackImg?.naturalWidth || 0, height: fallbackImg?.naturalHeight || 0 };
-    const id = ctx.store.addSvg(svg, dims.width, dims.height);
-    ctx.store.rememberUrl(url, id);
-    return { id, kind: 'svg', ...dims };
+    try {
+      const svg = decodeBase64Utf8(fetched.data);
+      const dims = svgIntrinsicSize(svg) ?? { width: fallbackImg?.naturalWidth || 0, height: fallbackImg?.naturalHeight || 0 };
+      const id = ctx.store.addSvg(svg, dims.width, dims.height);
+      ctx.store.rememberUrl(url, id);
+      return { id, kind: 'svg', ...dims };
+    } catch {
+      // Malformed base64 payload despite an svg-looking mime type: fall through to the raster/warning paths below.
+      fetched = null;
+    }
   }
   if (fetched) {
     const dims = fallbackImg && fallbackImg.naturalWidth > 0
@@ -141,9 +146,8 @@ export function canvasAsset(canvas: HTMLCanvasElement, ctx: MediaContext): Loade
 const SVG_STYLE_PROPS = ['fill', 'fill-opacity', 'fill-rule', 'stroke', 'stroke-width', 'stroke-opacity', 'stroke-linecap', 'stroke-linejoin',
   'stroke-dasharray', 'opacity', 'color', 'font-family', 'font-size', 'font-weight', 'display', 'visibility', 'transform', 'transform-origin'];
 
-export function inlineSvgAsset(svg: SVGSVGElement, ctx: MediaContext, win: Window, width: number, height: number): string {
-  const clone = svg.cloneNode(true) as SVGSVGElement;
-  const originals = [svg, ...Array.from(svg.querySelectorAll('*'))];
+function bakeComputedStyle(original: Element, clone: Element, win: Window): void {
+  const originals = [original, ...Array.from(original.querySelectorAll('*'))];
   const clones = [clone, ...Array.from(clone.querySelectorAll('*'))];
   for (let i = 0; i < originals.length && i < clones.length; i++) {
     const cs = win.getComputedStyle(originals[i]);
@@ -154,6 +158,11 @@ export function inlineSvgAsset(svg: SVGSVGElement, ctx: MediaContext, win: Windo
     }
     target.removeAttribute('class');
   }
+}
+
+export function inlineSvgAsset(svg: SVGSVGElement, ctx: MediaContext, win: Window, width: number, height: number): string {
+  const clone = svg.cloneNode(true) as SVGSVGElement;
+  bakeComputedStyle(svg, clone, win);
   for (const use of Array.from(clone.querySelectorAll('use'))) {
     const ref = use.getAttribute('href') ?? use.getAttribute('xlink:href') ?? '';
     if (!ref.startsWith('#')) continue;
@@ -163,7 +172,9 @@ export function inlineSvgAsset(svg: SVGSVGElement, ctx: MediaContext, win: Windo
     if (!target) continue;
     let defs = clone.querySelector('defs');
     if (!defs) { defs = ctx.doc.createElementNS('http://www.w3.org/2000/svg', 'defs'); clone.insertBefore(defs, clone.firstChild); }
-    defs.appendChild(target.cloneNode(true));
+    const targetClone = target.cloneNode(true) as Element;
+    bakeComputedStyle(target, targetClone, win);
+    defs.appendChild(targetClone);
   }
   clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
   clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
