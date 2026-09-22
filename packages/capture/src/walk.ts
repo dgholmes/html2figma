@@ -80,7 +80,7 @@ async function backgroundFills(cs: CSSStyleDeclaration, geo: Geometry, ctx: Walk
     const url = extractUrl(layer.image);
     if (url) {
       const asset = await assetFromUrl(url, ctx, 'background');
-      if (!asset || asset.kind !== 'image') continue;
+      if (!asset) continue;
       fills.push(imagePaintForBackground(layer, asset, geo));
     } else {
       const g = parseGradient(layer.image, geo.width, geo.height, ctx.color);
