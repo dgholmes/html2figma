@@ -85,6 +85,28 @@ describe('Builder', () => {
     expect(v.name).toBe('svg.icon');
   });
 
+  // D3: `place()` (called right after this) unconditionally calls `fig.resize(node.width,
+  // node.height)`, which overwrites width/height to the exact target box regardless of what
+  // `rescale` did — so asserting only the final width/height (as the test above does) would
+  // still pass even if the `rescale` call in createVector were deleted entirely. Spy on the
+  // mock's own `rescale` to actually prove it's called with the right uniform scale factor.
+  it('actually calls rescale with the uniform scale between the svg\'s natural size and the target box', async () => {
+    const realCreateNodeFromSvg = figma.createNodeFromSvg.bind(figma);
+    const rescaleCalls: number[] = [];
+    vi.spyOn(figma, 'createNodeFromSvg').mockImplementation((svg: string) => {
+      const f = realCreateNodeFromSvg(svg) as unknown as MockNode;
+      const realRescale = f.rescale.bind(f);
+      f.rescale = (s: number) => { rescaleCalls.push(s); realRescale(s); };
+      return f as unknown as ReturnType<typeof figma.createNodeFromSvg>;
+    });
+    // figmaMock's createNodeFromSvg always returns a 10x10 frame; target is 40x20, so the
+    // uniform scale must be min(40/10, 20/10) = 2.
+    const v = await build({ ...base, id: 'v2', name: 'svg.icon2', type: 'vector', assetId: 's1', width: 40, height: 20 } as VectorNode);
+    expect(rescaleCalls).toEqual([2]);
+    expect(v.width).toBeCloseTo(40); expect(v.height).toBeCloseTo(20);
+    vi.restoreAllMocks();
+  });
+
   it('falls back to a rasterized image fill when svg parsing fails', async () => {
     const v = await build({ ...base, id: 'v', name: 'svg.bad', type: 'vector', assetId: 'bad' } as VectorNode);
     expect(v.fills).toEqual([{ type: 'IMAGE', imageHash: 'img1', scaleMode: 'FIT' }]);

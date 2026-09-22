@@ -20,7 +20,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { countNodes, walkNodes, type H2FDocument, type Node as H2FNode } from '@h2f/schema';
+import { countNodes, type H2FDocument } from '@h2f/schema';
 import { describe, expect, it } from 'vitest';
 import { Builder, type BuilderDeps } from '../src/main/builder';
 import { FontResolver } from '../src/main/fonts';
@@ -53,26 +53,73 @@ function placeholderNames(node: MockNode, out: string[] = []): string[] {
   return out;
 }
 
+function walkBuilt(node: MockNode, visit: (n: MockNode) => void): void {
+  visit(node);
+  for (const c of node.children) walkBuilt(c, visit);
+}
+
+// D1: a leftover capture file from an older format (missing `document` on the envelope) must be
+// skipped cleanly rather than throwing a TypeError when something downstream dereferences it —
+// which would otherwise break a plain `npm test` run on a machine with a stale temp file.
+export function documentFromEnvelope(raw: unknown): H2FDocument | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const doc = (raw as { document?: unknown }).document;
+  return doc && typeof doc === 'object' ? (doc as H2FDocument) : null;
+}
+
+describe('documentFromEnvelope', () => {
+  it('returns null for an older-format capture file missing envelope.document, instead of throwing', () => {
+    expect(documentFromEnvelope({ someOldField: true })).toBeNull();
+    expect(documentFromEnvelope(null)).toBeNull();
+    expect(documentFromEnvelope('not an object')).toBeNull();
+    expect(documentFromEnvelope(42)).toBeNull();
+  });
+
+  it('returns the document for a well-formed envelope', () => {
+    const doc = { version: 1 } as unknown as H2FDocument;
+    expect(documentFromEnvelope({ runId: 'r1', capturedAt: 'now', document: doc })).toBe(doc);
+  });
+});
+
 describe.skipIf(!hasCapture)('layrd.pro acceptance: Figma import', () => {
   it('builds the live-captured document through the real Builder without throwing, with a matching node count and zero placeholders', async () => {
-    const envelope = JSON.parse(readFileSync(CAPTURE_PATH, 'utf8')) as CaptureEnvelope;
+    const envelope = JSON.parse(readFileSync(CAPTURE_PATH, 'utf8')) as unknown;
+
+    // D1: an older-format leftover file (missing envelope.document) is skipped cleanly rather
+    // than dereferencing `.document` and throwing a TypeError, so a stale file from a previous
+    // schema version can never break a plain `npm test` run.
+    const doc = documentFromEnvelope(envelope);
+    if (!doc) {
+      console.log(`[acceptance] skipping: capture at ${CAPTURE_PATH} is missing "document" (an older-format leftover file); run npm run test:acceptance to refresh it.`);
+      return;
+    }
 
     // Fail loudly — not skip — when this test was launched by layrd.mjs (H2F_ACCEPTANCE_RUN_ID
     // set) but the file on disk carries a different run's id. That combination should be
     // impossible given layrd.mjs deletes-then-rewrites the file itself before spawning this
     // test, so a mismatch here means something outside the normal flow raced or reused the temp
     // path; either way, a silent pass against unrelated data would be worse than a clear failure.
+    const runId = (envelope as Partial<CaptureEnvelope>).runId;
+    const capturedAt = (envelope as Partial<CaptureEnvelope>).capturedAt;
     if (expectedRunId) {
-      expect(envelope.runId, `capture at ${CAPTURE_PATH} has runId "${envelope.runId}" but this run of npm run test:acceptance expected "${expectedRunId}" — it is stale data, not the capture this run just produced.`).toBe(expectedRunId);
+      expect(runId, `capture at ${CAPTURE_PATH} has runId "${runId}" but this run of npm run test:acceptance expected "${expectedRunId}" — it is stale data, not the capture this run just produced.`).toBe(expectedRunId);
     }
 
-    const doc = envelope.document;
     const mock = installFigmaMock();
     const images = new Map<string, string>();
     const svgs = new Map<string, { svg: string; fallback?: Uint8Array }>();
     for (const asset of Object.values(doc.assets)) {
       if (asset.kind === 'image') images.set(asset.id, figma.createImage(base64ToBytes(asset.data)).hash);
-      else svgs.set(asset.id, { svg: asset.svg });
+      else {
+        // D2: also register a fallback image for every svg asset, mirroring what main/index.ts's
+        // real 'svg' handler does whenever the UI supplies fallback bytes — the previous version
+        // only ever populated `svgs`, so a real page whose svg backs an ImagePaint (CSS
+        // background-image on an svg, the same case svgImageFill.test.ts covers directly) would
+        // never actually exercise that registration path here.
+        const fallback = new Uint8Array([0]);
+        svgs.set(asset.id, { svg: asset.svg, fallback });
+        images.set(asset.id, figma.createImage(fallback).hash);
+      }
     }
     const fonts = new FontResolver(await figma.listAvailableFontsAsync());
     const warnings: string[] = [...doc.warnings];
@@ -85,21 +132,23 @@ describe.skipIf(!hasCapture)('layrd.pro acceptance: Figma import', () => {
 
     const expectedCount = countNodes(doc.root);
     const builtCount = countBuilt(root);
-    console.log(`[acceptance] built ${builtCount} figma nodes from ${expectedCount} captured nodes (captured ${envelope.capturedAt}), ${Object.keys(doc.assets).length} assets, ${warnings.length} warnings`);
+    console.log(`[acceptance] built ${builtCount} figma nodes from ${expectedCount} captured nodes (captured ${capturedAt}), ${Object.keys(doc.assets).length} assets, ${warnings.length} warnings`);
     expect(builtCount).toBe(expectedCount);
 
     const placeholders = placeholderNames(root);
     expect(placeholders, `placeholder "import failed" frame(s) found:\n${placeholders.join('\n')}`).toEqual([]);
 
-    // Sanity: text nodes with runs actually got characters set, frames referencing an image
-    // asset actually resolved to a real image fill (not silently dropped).
-    let textNodes = 0;
-    let imageFills = 0;
-    walkNodes(doc.root, (n: H2FNode) => {
-      if (n.type === 'text') textNodes++;
-      if (n.fills.some((f) => f.type === 'image')) imageFills++;
+    // D2: sanity-check the BUILT tree, not the source document — the previous version walked
+    // `doc.root` (the captured document) and counted nodes there, so it would pass even if the
+    // Builder produced nothing for them. Walking the built MockNode tree instead actually proves
+    // text nodes got `characters` set and image-paint fills resolved to real IMAGE fills.
+    let builtTextNodes = 0;
+    let builtImageFills = 0;
+    walkBuilt(root, (n) => {
+      if (n.type === 'TEXT' && typeof n.characters === 'string' && n.characters.length > 0) builtTextNodes++;
+      if ((n.fills as { type?: string }[]).some((f) => f.type === 'IMAGE')) builtImageFills++;
     });
-    expect(textNodes).toBeGreaterThan(0);
-    expect(imageFills).toBeGreaterThan(0);
+    expect(builtTextNodes).toBeGreaterThan(0);
+    expect(builtImageFills).toBeGreaterThan(0);
   });
 });
