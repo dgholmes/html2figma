@@ -1,0 +1,24 @@
+:root { color-scheme: light dark; font: 13px/1.4 system-ui, sans-serif; }
+body { width: 340px; margin: 0; padding: 14px; background: Canvas; color: CanvasText; }
+header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
+h1 { font-size: 15px; margin: 0; }
+#version { opacity: .6; font-size: 11px; }
+.tab { padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, CanvasText 6%, Canvas); margin-bottom: 10px; }
+#tab-title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#tab-url { opacity: .6; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.options label { display: block; margin: 4px 0; }
+button { font: inherit; border-radius: 8px; padding: 8px 12px; cursor: pointer; border: 1px solid color-mix(in srgb, CanvasText 20%, Canvas); background: Canvas; color: CanvasText; }
+button.primary { width: 100%; margin-top: 8px; background: #1e5eff; color: #fff; border-color: transparent; font-weight: 600; }
+button:disabled { opacity: .5; cursor: default; }
+.hint { opacity: .65; font-size: 11px; margin: 8px 0 0; }
+.hidden { display: none; }
+.status { margin-top: 12px; }
+.bar { height: 6px; border-radius: 3px; background: color-mix(in srgb, CanvasText 12%, Canvas); overflow: hidden; }
+#bar-fill { height: 100%; width: 0; background: #1e5eff; transition: width .2s; }
+#stage { margin-top: 6px; font-size: 12px; opacity: .8; }
+.result, .error { margin-top: 12px; padding: 10px; border-radius: 8px; }
+.result { background: color-mix(in srgb, #1e9e5a 12%, Canvas); }
+.error { background: color-mix(in srgb, #d33 12%, Canvas); }
+.row { display: flex; gap: 8px; margin-top: 8px; }
+pre { white-space: pre-wrap; word-break: break-word; font-size: 11px; max-height: 140px; overflow: auto; margin: 6px 0 0; }
+details summary { cursor: pointer; font-size: 12px; margin-top: 8px; }
