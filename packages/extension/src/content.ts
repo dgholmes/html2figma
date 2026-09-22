@@ -31,16 +31,22 @@ export async function runCapture(settings: CaptureSettings, io: ContentIO): Prom
   }
 }
 
-function downloadInPage(text: string, fileName: string): void {
+export function downloadInPage(text: string, fileName: string): void {
   const blob = new Blob([text], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = fileName;
-  a.style.display = 'none';
-  document.body.appendChild(a);
+  // Deliberately never appended to the captured page's document. Content-script Blob URLs are
+  // same-origin with the page, so any node exposing this href — even briefly, even detached a
+  // moment later — would let the page's own JavaScript recover the URL (e.g. via a
+  // MutationObserver) and fetch() the whole capture file back out. Combined with background.ts's
+  // fetchAsset, which fetches attacker-chosen cross-origin URLs with the user's cookies on the
+  // page's behalf, that would let a hostile page read back credentialed cross-origin resources it
+  // could never fetch itself. A detached anchor's .click() still triggers a normal Chrome
+  // download without ever placing the URL where page script can observe it.
   a.click();
-  setTimeout(() => { a.remove(); URL.revokeObjectURL(url); }, 30000);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 declare global { interface Window { __h2fContentInstalled?: boolean; __h2fRunning?: boolean } }

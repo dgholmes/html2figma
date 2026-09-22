@@ -17,7 +17,7 @@ function makeCtx(over: Partial<WalkContext> = {}): WalkContext {
     doc: document, win: window, store: new AssetStore(), warnings: [],
     loader: { fetchAsBase64: async () => null },
     color: (s) => parseColor(s), captureVideoFrames: true, isFontAvailable: () => true,
-    nextId: () => `n${++n}`, tick: async () => {}, ...over,
+    nextId: () => `n${++n}`, tick: async () => {}, pseudoEstimates: { count: 0 }, ...over,
   };
 }
 
@@ -176,6 +176,26 @@ describe('walkElement', () => {
     expect(text.runs[0].color.a).toBeCloseTo(0.5);
     expect(text.verticalAlign).toBe('center');
   });
+
+  // C2 regression: a password value must never appear in plaintext in the captured document (it
+  // ends up in the downloaded .h2f.json, chrome.storage.session, and the popup's clipboard copy).
+  it('masks a password input value with bullets instead of capturing it in plaintext', async () => {
+    document.body.innerHTML = `<input type="password" data-rect="0,0,200,40" value="hunter2" placeholder="Password">`;
+    const input = (await walkElement(document.querySelector('input')!, ROOT, makeCtx()))[0] as FrameNode;
+    const text = input.children[0] as TextNode;
+    expect(text.characters).toBe('•••••••');
+    expect(text.characters).not.toContain('hunter2');
+    expect(text.characters.length).toBe('hunter2'.length);
+  });
+
+  it('falls back to the placeholder (dimmed, not masked) for an empty password input', async () => {
+    document.body.innerHTML = `<input type="password" data-rect="0,0,200,40" placeholder="Password">`;
+    const input = (await walkElement(document.querySelector('input')!, ROOT, makeCtx()))[0] as FrameNode;
+    const text = input.children[0] as TextNode;
+    expect(text.characters).toBe('Password');
+    expect(text.runs[0].color.a).toBeCloseTo(0.5);
+  });
+
 });
 
 describe('buildRoot', () => {
@@ -187,5 +207,20 @@ describe('buildRoot', () => {
     expect(root).toMatchObject({ type: 'frame', x: 0, y: 0, width: 1000, height: 2400, clip: true });
     expect(root.fills).toEqual([{ type: 'solid', color: { r: 1, g: 1, b: 1, a: 1 } }]);
     expect(root.children[0]).toMatchObject({ name: 'body' });
+  });
+
+  // C4 regression: previously one "Estimated geometry for ::before of <x>." warning was pushed
+  // per pseudo-element, which floods `warnings` on a page with many decorative ::before/::after
+  // rules and buries warnings about real problems (the UI truncates the list for display).
+  it('aggregates many pseudo-element geometry estimates into a single counted warning instead of one per element', async () => {
+    const kids = Array.from({ length: 6 }, (_, i) => `<div class="deco" data-rect="0,${i * 10},50,10" style="content: 'x'"></div>`).join('');
+    document.body.innerHTML = `<main data-rect="0,0,300,300">${kids}</main>`;
+    Object.defineProperty(document.documentElement, 'clientWidth', { value: 300, configurable: true });
+    Object.defineProperty(document.documentElement, 'scrollHeight', { value: 300, configurable: true });
+    const ctx = makeCtx();
+    await buildRoot(document.documentElement, ctx);
+    const pseudoWarnings = ctx.warnings.filter((w) => /pseudo-element/.test(w));
+    expect(pseudoWarnings).toHaveLength(1);
+    expect(pseudoWarnings[0]).toMatch(/^Estimated geometry for \d+ pseudo-element\(s\)\.$/);
   });
 });

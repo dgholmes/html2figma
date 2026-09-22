@@ -45,6 +45,9 @@ export async function capturePage(options: CaptureOptions): Promise<CaptureResul
           lastYield = Date.now();
         }
       },
+      // buildRoot aggregates and pushes the pseudo-element estimate warning into this same
+      // `warnings` array once the whole tree has been walked (see WalkContext.pseudoEstimates).
+      pseudoEstimates: { count: 0 },
     };
     const rootNode = await buildRoot(root, ctx);
     progress('Finishing', 1, 1);

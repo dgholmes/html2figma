@@ -3,12 +3,19 @@ import type { ImportOptions, MainToUi, UiToMain } from '../messages';
 import { Builder } from './builder';
 import { FontResolver } from './fonts';
 
-export interface ImportState { images: Map<string, string>; svgs: Map<string, { svg: string; fallback?: Uint8Array }>; options: ImportOptions }
+export interface ImportState {
+  images: Map<string, string>; svgs: Map<string, { svg: string; fallback?: Uint8Array }>; options: ImportOptions;
+  // Asset-registration failures (figma.createImage throwing for a received asset or svg
+  // fallback) accumulated across the 'asset'/'svg' handlers below, so they survive into the
+  // final warnings list instead of only ever reaching the transient 'progress' stage line that
+  // the next asset's progress message immediately overwrites (see importDocument).
+  assetWarnings: string[];
+}
 
 const post = (msg: MainToUi) => figma.ui.postMessage(msg);
 
 export async function importDocument(doc: H2FDocument, state: ImportState): Promise<{ root: FrameNode; warnings: string[]; nodeCount: number }> {
-  const warnings = [...doc.warnings];
+  const warnings = [...doc.warnings, ...state.assetWarnings];
   post({ type: 'progress', stage: 'Loading fonts', done: 0, total: 1 });
   const fonts = new FontResolver(await figma.listAvailableFontsAsync());
   await fonts.preload(doc.root, warnings);
@@ -31,19 +38,28 @@ export async function importDocument(doc: H2FDocument, state: ImportState): Prom
 
 if (typeof figma !== 'undefined' && typeof __html__ !== 'undefined') {
   figma.showUI(__html__, { width: 420, height: 560, themeColors: true });
-  const state: ImportState = { images: new Map(), svgs: new Map(), options: { newPage: true } };
+  const state: ImportState = { images: new Map(), svgs: new Map(), options: { newPage: true }, assetWarnings: [] };
   let expected = 0;
   let received = 0;
   figma.ui.onmessage = async (msg: UiToMain) => {
     try {
       switch (msg.type) {
         case 'begin':
-          state.images.clear(); state.svgs.clear(); state.options = msg.options; expected = msg.assetCount; received = 0;
+          state.images.clear(); state.svgs.clear(); state.options = msg.options; state.assetWarnings = []; expected = msg.assetCount; received = 0;
           post({ type: 'progress', stage: 'Receiving assets', done: 0, total: Math.max(1, expected) });
           break;
         case 'asset':
           try { state.images.set(msg.id, figma.createImage(msg.bytes).hash); }
-          catch (e) { post({ type: 'progress', stage: `Skipped image ${msg.id}: ${e instanceof Error ? e.message : String(e)}`, done: received, total: Math.max(1, expected) }); }
+          catch (e) {
+            // C3: a transient 'progress' stage message alone isn't enough — the very next
+            // asset's progress post overwrites it in the UI before the user can read it. Keep
+            // this failure in `assetWarnings` too so it survives into the final warnings list
+            // (see importDocument), instead of the import silently reporting success with a
+            // missing fill.
+            const m = `Could not register image asset "${msg.id}": ${e instanceof Error ? e.message : String(e)}`;
+            state.assetWarnings.push(m);
+            post({ type: 'progress', stage: m, done: received, total: Math.max(1, expected) });
+          }
           received++;
           post({ type: 'progress', stage: 'Receiving assets', done: received, total: Math.max(1, expected) });
           break;
@@ -58,7 +74,11 @@ if (typeof figma !== 'undefined' && typeof __html__ !== 'undefined') {
           // referencing this id still resolves to a real image fill.
           if (msg.fallback) {
             try { state.images.set(msg.id, figma.createImage(msg.fallback).hash); }
-            catch (e) { post({ type: 'progress', stage: `Skipped svg fallback image ${msg.id}: ${e instanceof Error ? e.message : String(e)}`, done: received, total: Math.max(1, expected) }); }
+            catch (e) {
+              const m = `Could not register svg fallback image "${msg.id}": ${e instanceof Error ? e.message : String(e)}`;
+              state.assetWarnings.push(m);
+              post({ type: 'progress', stage: m, done: received, total: Math.max(1, expected) });
+            }
           }
           received++;
           post({ type: 'progress', stage: 'Receiving assets', done: received, total: Math.max(1, expected) });

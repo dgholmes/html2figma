@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { H2FDocument } from '@h2f/schema';
-import { makeFileName, runCapture, type ContentIO } from '../src/content';
+import { downloadInPage, makeFileName, runCapture, type ContentIO } from '../src/content';
 
 const doc = { version: 1, warnings: ['w1'], root: { type: 'frame' } } as unknown as H2FDocument;
 
@@ -47,5 +47,52 @@ describe('runCapture', () => {
     const i = io({ capture: vi.fn(async () => { throw new Error('kaput'); }) });
     await runCapture({ revealAnimations: true, captureVideoFrames: true }, i);
     expect(i.sent.at(-1)).toMatchObject({ type: 'failed', error: expect.stringContaining('kaput') });
+  });
+});
+
+// C1 regression: a Blob URL created here is same-origin with the captured page, so exposing it
+// through any node the page's own DOM can observe would let page JavaScript fetch() the whole
+// capture file back out (and, chained with background.ts's credentialed fetchAsset, exfiltrate
+// authenticated cross-origin resources the page inlined into itself). downloadInPage must trigger
+// the download without ever attaching the anchor to the page's document.
+describe('downloadInPage', () => {
+  let createObjectURL: ReturnType<typeof vi.fn>;
+  let revokeObjectURL: ReturnType<typeof vi.fn>;
+  let clicked: HTMLAnchorElement[];
+  let originalClick: () => void;
+
+  beforeEach(() => {
+    // jsdom does not implement URL.createObjectURL/revokeObjectURL; stub them so the function
+    // under test can run without touching real Blob storage.
+    if (!('createObjectURL' in URL)) (URL as unknown as { createObjectURL: unknown }).createObjectURL = () => '';
+    if (!('revokeObjectURL' in URL)) (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = () => {};
+    createObjectURL = vi.spyOn(URL, 'createObjectURL').mockImplementation(() => 'blob:mock-url');
+    revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    clicked = [];
+    originalClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) { clicked.push(this); };
+  });
+  afterEach(() => {
+    HTMLAnchorElement.prototype.click = originalClick;
+    vi.restoreAllMocks();
+  });
+
+  it('never attaches the download anchor to the page document, and clicks it detached', () => {
+    const before = document.body.innerHTML;
+    downloadInPage('{"a":1}', 'capture.h2f.json');
+    expect(document.body.innerHTML).toBe(before);
+    expect(document.querySelectorAll('a[download]')).toHaveLength(0);
+    expect(clicked).toHaveLength(1);
+    expect(clicked[0].isConnected).toBe(false);
+    expect(clicked[0].download).toBe('capture.h2f.json');
+  });
+
+  it('revokes the object URL shortly after, not left dangling for 30s', () => {
+    vi.useFakeTimers();
+    downloadInPage('{"a":1}', 'capture.h2f.json');
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1000);
+    expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-url');
+    vi.useRealTimers();
   });
 });

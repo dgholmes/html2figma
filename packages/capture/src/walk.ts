@@ -11,6 +11,11 @@ import { applyTextTransform, assembleText, mapTextAlign, runStyleFromComputed, t
 export interface WalkContext extends MediaContext {
   win: Window; color: ColorFn; captureVideoFrames: boolean;
   isFontAvailable: (family: string) => boolean; nextId: () => string; tick: () => Promise<void>;
+  // Shared counter for estimated-geometry pseudo-element warnings (see pseudoNode): incremented
+  // per element instead of pushing one warning each, so a page with hundreds of decorative
+  // ::before/::after rules doesn't flood ctx.warnings and bury warnings that explain real
+  // problems. The caller (capturePage) turns the final count into one aggregated warning.
+  pseudoEstimates: { count: number };
 }
 
 export const PLACEHOLDER_FILL: SolidPaint = { type: 'solid', color: { r: 0.2, g: 0.2, b: 0.2, a: 1 } };
@@ -306,7 +311,16 @@ function formControlText(el: Element, cs: CSSStyleDeclaration, geo: Geometry, ct
   if (el.tagName === 'INPUT') {
     const input = el as HTMLInputElement;
     if (!TEXT_INPUT_TYPES.has(input.type)) return null;
-    value = input.value; if (!value) { value = input.placeholder; placeholder = true; }
+    if (input.type === 'password') {
+      // Never emit the real password value into the capture file: it would be stored in
+      // plaintext in the .h2f.json download, in chrome.storage.session, and be offered to the
+      // clipboard by the popup's Copy button. A same-length bullet mask keeps the layout honest
+      // (the field still looks filled at the right width) without leaking the secret.
+      value = input.value ? '•'.repeat(input.value.length) : input.placeholder;
+      placeholder = !input.value;
+    } else {
+      value = input.value; if (!value) { value = input.placeholder; placeholder = true; }
+    }
   } else if (el.tagName === 'TEXTAREA') {
     const ta = el as HTMLTextAreaElement;
     value = ta.value; if (!value) { value = ta.placeholder; placeholder = true; }
@@ -354,7 +368,7 @@ function pseudoNode(el: Element, parentCs: CSSStyleDeclaration, which: '::before
   } else if (which === '::after') {
     y = contentY + contentH - h;
   }
-  ctx.warnings.push(`Estimated geometry for ${which} of <${el.tagName.toLowerCase()}>.`);
+  ctx.pseudoEstimates.count++;
   const geo: Geometry = { x, y, width: w, height: h, rotation: 0, abs: { x: abs.x + x, y: abs.y + y, width: w, height: h } };
   const name = `${nameForElement(el)}${which}`;
   const fills: Paint[] = [];
@@ -386,6 +400,10 @@ export async function buildRoot(root: HTMLElement, ctx: WalkContext): Promise<Fr
   else if (isVisible(bodyBg)) fills.push({ type: 'solid', color: bodyBg });
   else fills.push({ type: 'solid', color: { r: 1, g: 1, b: 1, a: 1 } });
   const children = await walkChildren(root, abs, ctx);
+  // One aggregated warning instead of one per pseudo-element (see WalkContext.pseudoEstimates):
+  // a page with hundreds of decorative ::before/::after rules would otherwise flood `warnings`
+  // and push out warnings that explain real problems, which the UI truncates for display.
+  if (ctx.pseudoEstimates.count) ctx.warnings.push(`Estimated geometry for ${ctx.pseudoEstimates.count} pseudo-element(s).`);
   return {
     id: ctx.nextId(), name: doc.title || 'Page', type: 'frame', x: 0, y: 0, width, height, rotation: 0, visible: true, opacity: 1,
     blendMode: 'normal', fills, radius: [0, 0, 0, 0], effects: [], clip: true, meta: { tag: 'html', classes: [] }, children,

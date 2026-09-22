@@ -6,6 +6,11 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const post = (msg: UiToMain) => parent.postMessage({ pluginMessage: msg }, '*');
 
 let current: H2FDocument | null = null;
+// C3: asset-stage failures discovered here (image decode, svg rasterize) accumulate separately
+// from `msg.warnings`, and the 'done' handler below appends both lists rather than replacing the
+// log with whichever arrives last — otherwise an early decode-failure message logged mid-loop is
+// simply overwritten by the final "Import finished" text and never seen.
+let assetWarnings: string[] = [];
 const drop = $('drop');
 const fileInput = $<HTMLInputElement>('file');
 const paste = $<HTMLTextAreaElement>('paste');
@@ -45,6 +50,7 @@ function loadText(text: string): void {
 
 async function startImport(doc: H2FDocument): Promise<void> {
   importBtn.disabled = true;
+  assetWarnings = [];
   const assets = Object.values(doc.assets);
   post({ type: 'begin', assetCount: assets.length, options: { newPage: $<HTMLInputElement>('opt-newpage').checked } });
   let i = 0;
@@ -54,9 +60,13 @@ async function startImport(doc: H2FDocument): Promise<void> {
     if (asset.kind === 'image') {
       const prepared = await prepareImageAsset(asset);
       if (prepared) post({ type: 'asset', id: asset.id, bytes: prepared.bytes, width: prepared.width, height: prepared.height });
-      else setLog(`${log.textContent ?? ''}\nCould not decode image ${asset.id} (${asset.mime}); its fill will be skipped.`.trim());
+      else assetWarnings.push(`Could not decode image ${asset.id} (${asset.mime}); its fill will be skipped.`);
     } else {
-      post({ type: 'svg', id: asset.id, svg: asset.svg, fallback: await rasterizeSvg(asset.svg, asset.width, asset.height) });
+      const fallback = await rasterizeSvg(asset.svg, asset.width, asset.height);
+      // C3: rasterizeSvg failing produced no message anywhere before this fix — the ImagePaint
+      // (if any) that names this asset would silently resolve to nothing on the main side.
+      if (!fallback) assetWarnings.push(`Could not rasterize SVG asset ${asset.id} as a fallback; if Figma can't parse it directly, its fill will be skipped.`);
+      post({ type: 'svg', id: asset.id, svg: asset.svg, fallback });
     }
     if (i % 10 === 0) await new Promise((r) => setTimeout(r, 0));
   }
@@ -83,11 +93,15 @@ window.onmessage = (event: MessageEvent<{ pluginMessage?: MainToUi }>) => {
   switch (msg.type) {
     case 'ready': setProgress('Drop a file to begin', 0, 1); break;
     case 'progress': setProgress(msg.stage, msg.done, msg.total); break;
-    case 'done':
+    case 'done': {
       setProgress(`Imported ${msg.nodeCount} layers`, 1, 1);
-      setLog(msg.warnings.length ? `${msg.warnings.length} warning(s):\n${msg.warnings.slice(0, 40).join('\n')}` : 'Import finished without warnings.');
+      // C3: append the UI-side asset warnings (decode/rasterize failures collected during
+      // startImport) to the main-side ones rather than only showing whichever arrives last.
+      const warnings = [...assetWarnings, ...msg.warnings];
+      setLog(warnings.length ? `${warnings.length} warning(s):\n${warnings.slice(0, 40).join('\n')}` : 'Import finished without warnings.');
       importBtn.disabled = false;
       break;
+    }
     case 'error': setProgress('Import failed', 0, 1); setLog(msg.message, true); importBtn.disabled = false; break;
   }
 };
