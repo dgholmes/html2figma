@@ -83,9 +83,30 @@ export function validateDocument(input: unknown): ValidationResult {
   if (!isObject(input.assets)) err('assets must be an object');
   if (!Array.isArray(input.warnings)) err('warnings must be an array');
   const assets = isObject(input.assets) ? input.assets : {};
+  // I9: a corrupt/truncated capture file could previously validate successfully with a
+  // malformed asset entry (e.g. missing `data`), and only crash later — as an unhandled
+  // rejection wedging the plugin UI — when something tried to actually use it (e.g.
+  // `asset.data.length` in the UI's byte-size estimate, or base64ToBytes decoding `undefined`).
+  // Checking each asset's own shape here means that failure surfaces as a normal, readable
+  // validation error instead.
+  for (const [id, asset] of Object.entries(assets)) validateAsset(id, asset, err);
   if (!isObject(input.root) || input.root.type !== 'frame') err('root must be a frame node');
   else validateNode(input.root, 'root', assets, err);
   return errors.length ? { ok: false, errors } : { ok: true, document: input as unknown as H2FDocument };
+}
+
+function validateAsset(id: string, asset: unknown, err: (m: string) => void): void {
+  if (!isObject(asset)) { err(`assets.${id}: must be an object`); return; }
+  if (asset.kind === 'image') {
+    if (typeof asset.mime !== 'string') err(`assets.${id}: mime must be a string`);
+    if (typeof asset.data !== 'string') err(`assets.${id}: data must be a string`);
+    if (typeof asset.width !== 'number' || typeof asset.height !== 'number') err(`assets.${id}: width and height must be numbers`);
+  } else if (asset.kind === 'svg') {
+    if (typeof asset.svg !== 'string') err(`assets.${id}: svg must be a string`);
+    if (typeof asset.width !== 'number' || typeof asset.height !== 'number') err(`assets.${id}: width and height must be numbers`);
+  } else {
+    err(`assets.${id}: unknown asset kind ${String(asset.kind)}`);
+  }
 }
 
 function validateNode(node: unknown, path: string, assets: Record<string, unknown>, err: (m: string) => void): void {

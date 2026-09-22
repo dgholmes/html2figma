@@ -46,6 +46,10 @@ check('reveal: never-revealed text captured', byName(reveal, /Never revealed/).l
 check('reveal: header flagged fixed at top', byName(reveal, /header/)[0]?.meta.position === 'fixed' && byName(reveal, /header/)[0]?.y === 0);
 check('reveal: oklch background parsed', reveal.root.fills[0]?.type === 'solid' && reveal.root.fills[0].color.r < 0.2);
 check('reveal: warning about forced reveal', reveal.warnings.some((w) => /Forced/.test(w)), JSON.stringify(reveal.warnings));
+// I7: a hidden overlay centered with a large translate(-50%, -50%) and no opacity transition must
+// not be force-revealed — it stays opacity:0/visible:false, not relocated by `transform: none`.
+const overlay = byName(reveal, /div\.overlay/)[0];
+check('reveal: hidden overlay left untouched (not force-revealed)', overlay?.opacity === 0 && overlay?.visible === false, JSON.stringify(overlay));
 
 const styles = await capture('styles.html');
 const card = byName(styles, /div\.card/)[0];

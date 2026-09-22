@@ -25,6 +25,13 @@ export async function fetchAsset(url: string, fetchImpl: typeof fetch = fetch): 
     const res = await fetchImpl(url, { credentials: 'include', signal: controller.signal });
     clearTimeout(timer);
     if (!res.ok) return null;
+    // I12: check the declared size before buffering the body at all. Without this, a response
+    // well over the cap was fully read into memory by arrayBuffer() before being rejected —
+    // exactly the unbounded-buffering cost the cap exists to avoid. This only catches responses
+    // that declare Content-Length (most do); a chunked response with no declared length still
+    // falls through to the post-hoc byteLength check below.
+    const contentLength = res.headers.get('content-length');
+    if (contentLength && Number(contentLength) > MAX_ASSET_BYTES) return null;
     const buf = await res.arrayBuffer();
     if (buf.byteLength > MAX_ASSET_BYTES) return null;
     const mime = (res.headers.get('content-type') || 'application/octet-stream').split(';')[0].trim();

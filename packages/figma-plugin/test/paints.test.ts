@@ -56,4 +56,17 @@ describe('effects and blend modes', () => {
     expect(toFigmaBlendMode('color-dodge')).toBe('COLOR_DODGE');
     expect(toFigmaBlendMode('plus-lighter')).toBe('NORMAL');
   });
+
+  // I6 regression: `mix-blend-mode: normal` (the default) must map to Figma's PASS_THROUGH when
+  // offered — NORMAL creates an isolated blending group, which would stop a descendant's real
+  // blend mode (e.g. `difference`) from seeing through to the actual ancestor background.
+  // PASS_THROUGH is only ever requested for container nodes (frames), never plain leaves.
+  it('maps normal to PASS_THROUGH only when explicitly offered for a non-isolating container, keeping NORMAL otherwise', () => {
+    expect(toFigmaBlendMode('normal', true)).toBe('PASS_THROUGH');
+    expect(toFigmaBlendMode('normal', false)).toBe('NORMAL');
+    expect(toFigmaBlendMode('normal')).toBe('NORMAL');
+    // A real, non-normal blend mode is unaffected by the flag either way.
+    expect(toFigmaBlendMode('multiply', true)).toBe('MULTIPLY');
+    expect(toFigmaBlendMode('difference', true)).toBe('DIFFERENCE');
+  });
 });

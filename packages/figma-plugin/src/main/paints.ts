@@ -85,6 +85,15 @@ const BLEND: Record<string, BlendMode> = {
   difference: 'DIFFERENCE', exclusion: 'EXCLUSION', hue: 'HUE', saturation: 'SATURATION', color: 'COLOR', luminosity: 'LUMINOSITY',
 };
 
-export function toFigmaBlendMode(css: string): BlendMode {
+// I6: a CSS `normal` blend mode (the default — explicit or inherited) means "just paint through",
+// which on a Figma frame/group is `PASS_THROUGH`, not `NORMAL`. `NORMAL` creates an isolated
+// blending group, so mapping every node's default blend mode to it made every DOM element (which
+// all become frames) an isolation boundary — a descendant with e.g. `mix-blend-mode: difference`
+// then blended only against its immediate parent instead of the real ancestor background,
+// rendering opaque instead of inverted. `allowPassThrough` is only passed `true` for container
+// nodes (frames, svg-wrapper frames) that don't otherwise isolate (opacity 1, no blur effect);
+// text/vector leaves and isolating containers keep the direct NORMAL mapping.
+export function toFigmaBlendMode(css: string, allowPassThrough = false): BlendMode {
+  if (allowPassThrough && (css === 'normal' || !(css in BLEND))) return 'PASS_THROUGH' as BlendMode;
   return BLEND[css] ?? 'NORMAL';
 }

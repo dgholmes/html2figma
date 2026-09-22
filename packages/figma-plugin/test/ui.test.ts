@@ -132,3 +132,62 @@ describe('ui asset-failure accumulation (C3)', () => {
     expect(document.getElementById('log')!.textContent).toBe('Import finished without warnings.');
   });
 });
+
+// I8 regression: rasterizing every svg asset "just in case" uploads an orphan, oversized raster
+// for every icon on the page even though most of them parse fine as vectors in Figma. Only an
+// asset an ImagePaint actually names should be rasterized proactively.
+describe('ui rasterizes svg assets only when needed (I8)', () => {
+  it('does not rasterize an svg asset that is only used as a vector node', async () => {
+    const { posted } = await loadUi();
+    const doc = sampleDoc();
+    // Not referenced by any ImagePaint — only as a (hypothetical) vector node elsewhere.
+    doc.root.fills = [];
+    pasteAndImport(doc);
+    await flush();
+
+    expect(rasterizeSvg).not.toHaveBeenCalled();
+    const svgMsg = posted.find((m) => m.type === 'svg' && m.id === 'svg1') as { fallback?: Uint8Array } | undefined;
+    expect(svgMsg).toBeTruthy();
+    expect(svgMsg!.fallback).toBeUndefined();
+  });
+
+  it('still rasterizes an svg asset that an ImagePaint references', async () => {
+    const { posted } = await loadUi();
+    pasteAndImport(sampleDoc()); // sampleDoc's root fill references svg1 as an ImagePaint
+    await flush();
+
+    expect(rasterizeSvg).toHaveBeenCalledWith('<svg/>', 10, 10);
+    const svgMsg = posted.find((m) => m.type === 'svg' && m.id === 'svg1') as { fallback?: Uint8Array } | undefined;
+    expect(svgMsg!.fallback).toBeInstanceOf(Uint8Array);
+  });
+});
+
+// I9 regression: a corrupt/truncated file (or any other unexpected failure reading it or
+// importing it) must be reported and leave the UI usable, not wedge it with the button stuck
+// disabled and nothing logged.
+describe('ui error handling for corrupt files and unexpected failures (I9)', () => {
+  it('logs an error and does not leave the button stuck when file.text() rejects', async () => {
+    await loadUi();
+    const badFile = { name: 'broken.h2f.json', text: () => Promise.reject(new Error('stream errored')) } as unknown as File;
+    const fileInput = document.getElementById('file') as HTMLInputElement;
+    Object.defineProperty(fileInput, 'files', { value: [badFile], configurable: true });
+    fileInput.dispatchEvent(new Event('change'));
+    await flush();
+
+    const log = document.getElementById('log')!;
+    expect(log.textContent).toMatch(/Could not read broken\.h2f\.json/);
+    expect(log.classList.contains('error')).toBe(true);
+    expect((document.getElementById('import') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('logs an error and re-enables the button when startImport rejects unexpectedly', async () => {
+    vi.mocked(prepareImageAsset).mockRejectedValueOnce(new Error('boom'));
+    await loadUi();
+    pasteAndImport(sampleDoc());
+    await flush();
+
+    const log = document.getElementById('log')!;
+    expect(log.textContent).toMatch(/Could not import: boom/);
+    expect((document.getElementById('import') as HTMLButtonElement).disabled).toBe(false);
+  });
+});

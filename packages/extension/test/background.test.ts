@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { bytesToBase64, fetchAsset, handleMessage, type BackgroundDeps } from '../src/background';
+import { bytesToBase64, fetchAsset, handleMessage, MAX_ASSET_BYTES, type BackgroundDeps } from '../src/background';
 import type { JobState } from '../src/messages';
 
 function deps(over: Partial<BackgroundDeps> = {}) {
@@ -59,6 +59,33 @@ describe('fetchAsset', () => {
     expect(await fetchAsset('https://x/a.png', bad as unknown as typeof fetch)).toBeNull();
     const boom = vi.fn(async () => { throw new TypeError('network'); });
     expect(await fetchAsset('https://x/a.png', boom as unknown as typeof fetch)).toBeNull();
+  });
+
+  // I12 regression: a response declaring an oversized Content-Length must be rejected without
+  // ever buffering the body — previously arrayBuffer() ran first, fully reading a response well
+  // over the cap into memory before the size check could reject it.
+  it('bails on a declared oversized Content-Length without reading the body', async () => {
+    const arrayBuffer = vi.fn(async () => { throw new Error('response body should never have been read'); });
+    const huge = vi.fn(async () => ({
+      ok: true,
+      headers: { get: (h: string) => (h === 'content-length' ? String(MAX_ASSET_BYTES + 1) : 'image/png') },
+      arrayBuffer,
+    } as unknown as Response));
+    expect(await fetchAsset('https://x/huge.png', huge as unknown as typeof fetch)).toBeNull();
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
+  it('still allows a response within the Content-Length cap through to the byteLength read', async () => {
+    const small = vi.fn(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/png', 'content-length': '3' } }));
+    expect(await fetchAsset('https://x/small.png', small as unknown as typeof fetch)).toEqual({ mime: 'image/png', data: 'AQID' });
+  });
+
+  it('falls back to the post-hoc byteLength check when Content-Length is absent (chunked response)', async () => {
+    const chunked = vi.fn(async () => {
+      const body = new Uint8Array(MAX_ASSET_BYTES + 1);
+      return new Response(body, { headers: { 'content-type': 'image/png' } });
+    });
+    expect(await fetchAsset('https://x/chunked.png', chunked as unknown as typeof fetch)).toBeNull();
   });
 });
 

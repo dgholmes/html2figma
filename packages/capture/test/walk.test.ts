@@ -167,6 +167,34 @@ describe('walkElement', () => {
     expect(text.visible).toBe(true);
   });
 
+  // I5 regression: a text-bearing element (no element children, but real text content) must not
+  // be rotated, because frameFor places children using the axis-aligned bbox regardless of
+  // rotation — rotating it here would misplace/oversize the text child. `isLeafLike` previously
+  // returned true vacuously for any element with zero element children, including this one.
+  it('does not rotate an element that has a text child, avoiding a misplaced/oversized text run', async () => {
+    document.body.innerHTML = `<h2 data-rect="150,50,50,100" data-text-rect="150,50,50,100" style="transform: matrix(0, 1, -1, 0, 0, 0)">Title</h2>`;
+    const h2El = document.querySelector('h2')!;
+    Object.defineProperty(h2El, 'offsetWidth', { value: 100, configurable: true });
+    Object.defineProperty(h2El, 'offsetHeight', { value: 50, configurable: true });
+    const h2 = (await walkElement(h2El, ROOT, makeCtx()))[0] as FrameNode;
+    expect(h2.rotation).toBe(0);
+    expect(h2.width).toBeCloseTo(50);
+    expect(h2.height).toBeCloseTo(100);
+    const text = h2.children[0] as TextNode;
+    expect(text.characters).toBe('Title');
+  });
+
+  it('still rotates a genuinely empty leaf element (no text, no non-media children)', async () => {
+    document.body.innerHTML = `<div data-rect="175,50,50,100" style="transform: matrix(0, 1, -1, 0, 0, 0)"></div>`;
+    const divEl = document.querySelector('div')!;
+    Object.defineProperty(divEl, 'offsetWidth', { value: 100, configurable: true });
+    Object.defineProperty(divEl, 'offsetHeight', { value: 50, configurable: true });
+    const f = (await walkElement(divEl, ROOT, makeCtx()))[0] as FrameNode;
+    expect(f.rotation).toBeCloseTo(-90);
+    expect(f.width).toBeCloseTo(100);
+    expect(f.height).toBeCloseTo(50);
+  });
+
   it('adds synthetic text for inputs from placeholder', async () => {
     document.body.innerHTML = `<input data-rect="0,0,200,40" placeholder="Email" style="padding: 8px; border: 1px solid rgb(0, 0, 0)">`;
     const input = (await walkElement(document.querySelector('input')!, ROOT, makeCtx()))[0] as FrameNode;

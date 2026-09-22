@@ -112,7 +112,21 @@ function imagePaintForObjectFit(asset: LoadedAsset, cs: CSSStyleDeclaration, geo
 }
 
 function isLeafLike(el: Element): boolean {
-  return Array.from(el.children).every((c) => LEAF_MEDIA.has(c.tagName));
+  // I5: rotation is only safe for an element that produces no child nodes of its own. `frameFor`
+  // places children using `geo.abs` — the axis-aligned bounding box — as their parent rect
+  // regardless of rotation, which is only correct when there ARE no children to place. The prior
+  // check (`el.children.every(isMedia)`) was true *vacuously* for any element with zero element
+  // children, which wrongly included ordinary text-bearing elements like `<h2>Title</h2>`: their
+  // text child then got measured against the rotated bbox instead of the unrotated local frame,
+  // producing an offset, oversized heading. Requiring both no element children AND no
+  // non-whitespace text keeps rotation for genuinely empty/replaced leaves (the common case:
+  // decorative divs, icons) while falling back to the correct unrotated placement for anything
+  // that actually has content to lay out inside it.
+  if (el.children.length > 0) return false;
+  for (const child of Array.from(el.childNodes)) {
+    if (child.nodeType === 3 && (child.textContent ?? '').trim()) return false;
+  }
+  return true;
 }
 
 export async function walkElement(el: Element, parentAbs: Rect, ctx: WalkContext): Promise<Node[]> {

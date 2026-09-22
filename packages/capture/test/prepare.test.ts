@@ -1,16 +1,44 @@
 import { describe, expect, it, vi } from 'vitest';
-import { preparePage, shouldForceReveal } from '../src/prepare';
+import { hasOpacityTransition, preparePage, shouldForceReveal } from '../src/prepare';
 
 const cs = (over: Partial<CSSStyleDeclaration>) => ({ opacity: '1', transitionProperty: 'all', transitionDuration: '0s', transform: 'none', display: 'block', ...over }) as CSSStyleDeclaration;
 
 describe('shouldForceReveal', () => {
-  it('targets opacity-0 elements that animate opacity or carry a reveal transform', () => {
+  it('targets opacity-0 elements that animate opacity or carry a small reveal-style transform', () => {
     expect(shouldForceReveal(cs({ opacity: '0', transitionProperty: 'all', transitionDuration: '0.6s' }))).toBe(true);
     expect(shouldForceReveal(cs({ opacity: '0', transitionProperty: 'opacity, transform', transitionDuration: '0.3s, 0.3s' }))).toBe(true);
     expect(shouldForceReveal(cs({ opacity: '0', transform: 'matrix(1, 0, 0, 1, 0, 24)' }))).toBe(true);
     expect(shouldForceReveal(cs({ opacity: '0' }))).toBe(false);
     expect(shouldForceReveal(cs({ opacity: '0', transitionProperty: 'color', transitionDuration: '1s' }))).toBe(false);
     expect(shouldForceReveal(cs({ opacity: '1', transitionDuration: '1s' }))).toBe(false);
+  });
+
+  // I7 regression: the transform-only trigger previously fired for ANY non-identity transform,
+  // which caught the canonical hidden-overlay pattern (a modal/drawer/tooltip/cookie banner
+  // centered with `translate(-50%, -50%)`, no opacity transition) as if it were a scroll-reveal
+  // target. Bounding it to small translate/scale — the kind real scroll-reveal libraries pair
+  // with their opacity animation — excludes that large centering transform.
+  it('does not treat a large centering transform (no opacity transition) as a reveal signal', () => {
+    // e.g. translate(-50%, -50%) resolved against a ~600px modal: matrix(1, 0, 0, 1, -300, -300)
+    // — far outside the ~10%-of-viewport bound real scroll-reveal transforms use.
+    expect(shouldForceReveal(cs({ opacity: '0', transitionProperty: 'none', transitionDuration: '0s', transform: 'matrix(1, 0, 0, 1, -300, -300)' }))).toBe(false);
+  });
+
+  it('does not treat a skew/rotation as a reveal signal even when the translation component is small', () => {
+    expect(shouldForceReveal(cs({ opacity: '0', transitionProperty: 'none', transitionDuration: '0s', transform: 'matrix(1, 0.5, 0, 1, 0, 0)' }))).toBe(false);
+  });
+
+  it('does not treat an out-of-bounds scale as a reveal signal', () => {
+    expect(shouldForceReveal(cs({ opacity: '0', transitionProperty: 'none', transitionDuration: '0s', transform: 'matrix(3, 0, 0, 3, 0, 0)' }))).toBe(false);
+  });
+});
+
+describe('hasOpacityTransition', () => {
+  it('is true only when transition-property includes opacity or all with a nonzero duration', () => {
+    expect(hasOpacityTransition(cs({ transitionProperty: 'all', transitionDuration: '0.6s' }))).toBe(true);
+    expect(hasOpacityTransition(cs({ transitionProperty: 'opacity', transitionDuration: '0.3s' }))).toBe(true);
+    expect(hasOpacityTransition(cs({ transitionProperty: 'color', transitionDuration: '1s' }))).toBe(false);
+    expect(hasOpacityTransition(cs({ transitionProperty: 'all', transitionDuration: '0s' }))).toBe(false);
   });
 });
 
@@ -35,6 +63,40 @@ describe('preparePage', () => {
     result.restore();
     expect(hidden.getAttribute('style')).toBe(before);
     expect(document.getElementById('spinner')!.style.getPropertyValue('animation-play-state')).toBe('');
+  }, 15000);
+
+  // I7 regression: a hidden overlay (opacity: 0, visibility: hidden, a small transform, but no
+  // opacity transition) must not be force-revealed into visibility — only opacity/transform get
+  // forced (the small-transform signal is weak enough to still act on for those, and 20px is not
+  // a relocation concern), but `visibility: hidden` stays untouched so the element still reports
+  // `visible: false` in the final capture.
+  it('does not force visibility on an element with a small transform but no opacity transition', async () => {
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    // jsdom does not resolve translateY(20px) into matrix() form for computed style (it echoes
+    // the specified value verbatim, same limitation noted in geometry.test.ts), so the already-
+    // resolved matrix() form is used directly here — matches translateY(20px).
+    document.body.innerHTML = `<div id="tip" style="opacity: 0; visibility: hidden; transform: matrix(1, 0, 0, 1, 0, 20); transition-property: none; transition-duration: 0s"></div>`;
+    const tip = document.getElementById('tip')!;
+    await preparePage(window, document.documentElement, { revealAnimations: true });
+    expect(tip.style.getPropertyValue('opacity')).toBe('1');
+    expect(tip.style.getPropertyValue('visibility')).not.toBe('visible');
+  }, 15000);
+
+  // I7 regression: a hidden overlay whose only transform is a large centering translate (no
+  // opacity transition) must be left alone entirely — not forced visible, not relocated by
+  // `transform: none` stripping the centering transform.
+  it('leaves a hidden overlay alone when it only carries a large centering transform and no opacity transition', async () => {
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    document.body.innerHTML = `<div id="modal" style="opacity: 0; visibility: hidden; transform: matrix(1, 0, 0, 1, -300, -300); transition-property: none; transition-duration: 0s"></div>`;
+    const modal = document.getElementById('modal')!;
+    const beforeStyle = modal.getAttribute('style');
+    const result = await preparePage(window, document.documentElement, { revealAnimations: true });
+    // Untouched entirely: shouldForceReveal excludes it (no opacity transition, transform too
+    // large to be a reveal signal), so setStyle is never called on it at all.
+    expect(modal.getAttribute('style')).toBe(beforeStyle);
+    expect(modal.style.getPropertyValue('opacity')).toBe('0');
+    expect(modal.getAttribute('style')).toContain('visibility: hidden');
+    expect(result.warnings.some((w) => /Forced/.test(w))).toBe(false);
   }, 15000);
 
   it('does nothing to styles when reveal is disabled', async () => {

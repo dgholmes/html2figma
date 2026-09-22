@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FrameNode, Node as H2FNode, TextNode, VectorNode } from '@h2f/schema';
 import { Builder, type BuilderDeps } from '../src/main/builder';
 import { FontResolver } from '../src/main/fonts';
@@ -30,6 +30,25 @@ describe('Builder', () => {
     expect(f.effects).toEqual([{ type: 'LAYER_BLUR', radius: 2, visible: true }]);
     expect(f.children[0].name).toBe('child');
     expect(mock.currentPage.children).toContain(f);
+  });
+
+  // I6 regression: every DOM element becomes a frame, so mapping the default `normal` blend
+  // mode straight to Figma's NORMAL isolated every single frame — a descendant with a real
+  // blend mode (e.g. mix-blend-mode: difference) then blended only against its immediate parent
+  // instead of the page background. Non-isolating frames must get PASS_THROUGH; a frame that
+  // does isolate (opacity < 1) keeps NORMAL; text leaves never get PASS_THROUGH at all.
+  it('gives non-isolating frames PASS_THROUGH instead of NORMAL, and keeps NORMAL for isolating frames and text leaves', async () => {
+    const passthrough = await build({ ...base, id: 'pt', name: 'pt', type: 'frame', blendMode: 'normal', children: [] });
+    expect(passthrough.blendMode).toBe('PASS_THROUGH');
+
+    const isolating = await build({ ...base, id: 'iso', name: 'iso', type: 'frame', blendMode: 'normal', opacity: 0.5, children: [] });
+    expect(isolating.blendMode).toBe('NORMAL');
+
+    const blended = await build({ ...base, id: 'bl', name: 'bl', type: 'frame', blendMode: 'difference', children: [] });
+    expect(blended.blendMode).toBe('DIFFERENCE');
+
+    const text = await build({ ...base, id: 't3', name: 'Hi', type: 'text', characters: 'Hi', runs: [], blendMode: 'normal', align: 'left', verticalAlign: 'top' } as TextNode);
+    expect(text.blendMode).toBe('NORMAL');
   });
 
   it('applies rotation through relativeTransform', async () => {
@@ -85,5 +104,28 @@ describe('Builder', () => {
     const children: FrameNode[] = Array.from({ length: 120 }, (_, i) => ({ ...base, id: `c${i}`, name: `c${i}`, type: 'frame', children: [] }));
     await build({ ...base, id: 'root', name: 'root', type: 'frame', children });
     expect(seen).toEqual([50, 100]);
+  });
+
+  // I10 regression: createFrame appends the frame to its parent before configuring it, so a
+  // throw partway through (after appendChild) used to leave a stray, half-built default frame in
+  // the document *alongside* the red-dashed placeholder build()'s catch creates — two children
+  // where there should be one.
+  it('does not leave an orphan half-built frame behind when a throw happens after the frame was already appended', async () => {
+    const realCreateFrame = figma.createFrame.bind(figma);
+    let poisonNext = true;
+    vi.spyOn(figma, 'createFrame').mockImplementation(() => {
+      const f = realCreateFrame();
+      if (poisonNext) {
+        poisonNext = false; // only the node under test throws; the placeholder frame created next must succeed
+        (f as unknown as MockNode).resize = () => { throw new Error('boom mid-build'); };
+      }
+      return f;
+    });
+    const node: FrameNode = { ...base, id: 'bad-frame', name: 'bad-frame', type: 'frame', children: [] };
+    const result = await build(node);
+    expect(result.name).toMatch(/bad-frame \(import failed/);
+    expect(mock.currentPage.children).toHaveLength(1);
+    expect(mock.currentPage.children[0]).toBe(result);
+    vi.restoreAllMocks();
   });
 });

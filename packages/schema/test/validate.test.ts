@@ -61,6 +61,33 @@ describe('validateDocument', () => {
     expect(validateDocument(null).ok).toBe(false);
     expect(validateDocument('x').ok).toBe(false);
   });
+
+  // I9 regression: a corrupt/truncated capture file must fail validation cleanly here rather
+  // than validating successfully and crashing later (e.g. the plugin UI's byte-size estimate
+  // reading `.length` off a missing `data` field, or base64ToBytes decoding `undefined`).
+  it('rejects an image asset whose data field is missing', () => {
+    const result = validateDocument(doc([], { a1: { id: 'a1', kind: 'image', mime: 'image/png', width: 1, height: 1, origin: 'img' } as unknown as H2FDocument['assets']['a1'] }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.join('\n')).toMatch(/assets\.a1.*data/);
+  });
+
+  it('rejects an svg asset whose svg field is missing or non-string', () => {
+    const result = validateDocument(doc([], { s1: { id: 's1', kind: 'svg', svg: 123, width: 10, height: 10 } as unknown as H2FDocument['assets']['s1'] }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.join('\n')).toMatch(/assets\.s1.*svg/);
+  });
+
+  it('rejects an asset with an unknown kind', () => {
+    const result = validateDocument(doc([], { x1: { id: 'x1', kind: 'video', width: 1, height: 1 } as unknown as H2FDocument['assets']['x1'] }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.join('\n')).toMatch(/assets\.x1.*unknown asset kind/);
+  });
+
+  it('rejects a non-object asset entry', () => {
+    const result = validateDocument(doc([], { n1: null as unknown as H2FDocument['assets']['n1'] }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.join('\n')).toMatch(/assets\.n1: must be an object/);
+  });
 });
 
 describe('walkNodes / countNodes', () => {

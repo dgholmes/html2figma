@@ -1,15 +1,42 @@
+import { decomposeMatrix, isIdentityMatrix, parseMatrix } from './css';
+
 export type ProgressFn = (stage: string, done: number, total: number) => void;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const nextFrame = (win: Window) => new Promise<void>((r) => (win.requestAnimationFrame ? win.requestAnimationFrame(() => r()) : setTimeout(r, 16)));
 
-export function shouldForceReveal(cs: CSSStyleDeclaration): boolean {
-  if (cs.display === 'none' || parseFloat(cs.opacity || '1') > 0.001) return false;
+export interface Viewport { width: number; height: number }
+const DEFAULT_VIEWPORT: Viewport = { width: 1440, height: 900 };
+
+// I7: the spec's force-reveal trigger is "opacity: 0 AND transition-property includes opacity or
+// all" — the actual signature of the 27 scroll-reveal blocks this feature was built for. Exposed
+// separately from shouldForceReveal so the caller (the force-reveal scan below) can also use it to
+// decide whether it's safe to force `visibility: visible`, not just whether to force at all.
+export function hasOpacityTransition(cs: CSSStyleDeclaration): boolean {
   const props = (cs.transitionProperty || '').split(',').map((p) => p.trim());
   const durations = (cs.transitionDuration || '0s').split(',').map((d) => parseFloat(d) || 0);
-  const animatesOpacity = props.some((p, i) => (p === 'all' || p === 'opacity') && (durations[i] ?? durations[durations.length - 1] ?? 0) > 0);
-  const hasRevealTransform = !!cs.transform && cs.transform !== 'none' && cs.transform !== 'matrix(1, 0, 0, 1, 0, 0)';
-  return animatesOpacity || hasRevealTransform;
+  return props.some((p, i) => (p === 'all' || p === 'opacity') && (durations[i] ?? durations[durations.length - 1] ?? 0) > 0);
+}
+
+// A small translate/scale, of the kind scroll-reveal libraries pair with their opacity animation
+// (see the design spec: "opacity: 0 plus a small translate/scale"), used as a secondary signal
+// when there's no declared opacity transition to go on. Bounded to translations under ~10% of the
+// viewport and scale within 0.5–1.5 so it can't be satisfied by an unrelated large transform, e.g.
+// a `translate(-50%, -50%)` centering a modal (which, resolved against a typical modal's own
+// size, is easily hundreds of pixels — far outside this bound).
+function hasSmallRevealTransform(cs: CSSStyleDeclaration, viewport: Viewport): boolean {
+  const m = parseMatrix(cs.transform);
+  if (!m || isIdentityMatrix(m)) return false;
+  const d = decomposeMatrix(m);
+  if (d.skewed) return false;
+  const scaleOk = d.scaleX >= 0.5 && d.scaleX <= 1.5 && d.scaleY >= 0.5 && d.scaleY <= 1.5;
+  const translateOk = Math.abs(m.e) <= viewport.width * 0.1 && Math.abs(m.f) <= viewport.height * 0.1;
+  return scaleOk && translateOk;
+}
+
+export function shouldForceReveal(cs: CSSStyleDeclaration, viewport: Viewport = DEFAULT_VIEWPORT): boolean {
+  if (cs.display === 'none' || parseFloat(cs.opacity || '1') > 0.001) return false;
+  return hasOpacityTransition(cs) || hasSmallRevealTransform(cs, viewport);
 }
 
 // Minimum real time to guarantee has elapsed since the scroll-reset before scanning for elements
@@ -119,10 +146,18 @@ export async function preparePage(win: Window, root: Element, opts: { revealAnim
     if (elapsedSinceReset < REVEAL_SETTLE_MS) await sleep(REVEAL_SETTLE_MS - elapsedSinceReset);
     try {
       let forced = 0;
+      const viewport: Viewport = { width: win.innerWidth || DEFAULT_VIEWPORT.width, height: win.innerHeight || DEFAULT_VIEWPORT.height };
       for (const el of Array.from(doc.querySelectorAll<HTMLElement>('body *'))) {
         const cs = win.getComputedStyle(el);
-        if (shouldForceReveal(cs)) {
-          setStyle(el, { opacity: '1', transform: 'none', visibility: 'visible', transition: 'none', animation: 'none' });
+        if (shouldForceReveal(cs, viewport)) {
+          const forcedStyle: Record<string, string> = { opacity: '1', transform: 'none', transition: 'none', animation: 'none' };
+          // Only force `visibility: visible` when there's an actual opacity transition — the
+          // spec's own trigger. Without one, this element was only caught by the bounded
+          // small-transform signal, which is a weaker sign of a scroll-reveal target; an
+          // element that's also `visibility: hidden` (the canonical modal/drawer/tooltip/cookie
+          // banner pattern) stays hidden rather than being dragged into the capture.
+          if (hasOpacityTransition(cs)) forcedStyle.visibility = 'visible';
+          setStyle(el, forcedStyle);
           forced++;
         } else if (cs.animationName && cs.animationName !== 'none' && /infinite/.test(cs.animationIterationCount || '')) {
           setStyle(el, { 'animation-play-state': 'paused' });

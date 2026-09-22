@@ -33,9 +33,14 @@ async function toPng(source: ImageBitmap | HTMLImageElement, width: number, heig
 }
 
 export async function prepareImageAsset(asset: ImageAsset): Promise<{ bytes: Uint8Array; width: number; height: number } | null> {
-  const bytes = base64ToBytes(asset.data);
-  if (!needsReencode(asset)) return { bytes, width: asset.width, height: asset.height };
+  // I9: base64ToBytes ran outside this try, so malformed base64 (a corrupt/truncated download)
+  // threw straight out of prepareImageAsset and, uncaught, out of startImport as an unhandled
+  // rejection — the import button stayed disabled and the progress bar just stopped with no
+  // message. Moving it inside means any decode failure is reported the same way an
+  // unsupported-format image already is: this asset's fill is skipped, not the whole import.
   try {
+    const bytes = base64ToBytes(asset.data);
+    if (!needsReencode(asset)) return { bytes, width: asset.width, height: asset.height };
     const bitmap = await createImageBitmap(new Blob([bytes as BlobPart], { type: asset.mime }));
     const out = await toPng(bitmap, bitmap.width, bitmap.height);
     bitmap.close();

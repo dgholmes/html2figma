@@ -17,6 +17,15 @@ const yieldToUi = () => new Promise<void>((r) => setTimeout(r, 0));
 
 export class Builder {
   private count = 0;
+  // I10: the node most recently appendChild'd to its parent by create() but not yet fully
+  // configured. createFrame/createText/createVector all append immediately (so children can be
+  // built into the right parent) and only fill in geometry/fills/etc afterwards, so a throw
+  // partway through leaves a stray, partially-built node in the document alongside the red-dashed
+  // placeholder build()'s catch below creates. Tracking it here lets that catch remove the orphan
+  // first. Safe as a single shared field because the Builder never runs two create() calls
+  // concurrently — createFrame's children loop awaits each child's build() in turn — so by the
+  // time any create() call can throw, this always still points at *its own* just-appended node.
+  private pendingNode: SceneNode | null = null;
   constructor(private readonly deps: BuilderDeps) {}
   get done(): number { return this.count; }
 
@@ -27,6 +36,10 @@ export class Builder {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       this.deps.warnings.push(`Failed to build "${node.name}": ${message}`);
+      if (this.pendingNode) {
+        try { this.pendingNode.remove(); } catch { /* already gone */ }
+        this.pendingNode = null;
+      }
       created = this.placeholder(node, parent, message);
     }
     this.count++;
@@ -53,11 +66,17 @@ export class Builder {
     }
   }
 
-  private applyCommon(fig: SceneNode & BlendMixin & SceneNodeMixin, node: NodeBase): void {
+  private applyCommon(fig: SceneNode & BlendMixin & SceneNodeMixin, node: NodeBase, isContainer = false): void {
     fig.name = node.name;
     fig.visible = node.visible;
     fig.opacity = Math.min(1, Math.max(0, node.opacity));
-    fig.blendMode = toFigmaBlendMode(node.blendMode);
+    // I6: PASS_THROUGH is only offered for container nodes (frames), and only when this node
+    // doesn't itself isolate — opacity below 1 or a blur filter both create a CSS stacking
+    // context, matching the isolation an explicit `isolation: isolate` would force. (CSS
+    // `isolation` itself isn't captured by the schema; this is the closest approximation without
+    // widening it — see the code review report for that gap.)
+    const isolates = node.opacity < 1 || node.effects.some((e) => e.type === 'layer-blur' || e.type === 'background-blur');
+    fig.blendMode = toFigmaBlendMode(node.blendMode, isContainer && !isolates);
     if (node.effects.length) {
       try { fig.effects = toFigmaEffects(node.effects); }
       catch (e) { this.deps.warnings.push(`Effects skipped on "${node.name}": ${e instanceof Error ? e.message : String(e)}`); }
@@ -71,8 +90,9 @@ export class Builder {
   private async createFrame(node: H2FFrame, parent: ChildrenMixin & BaseNode): Promise<FrameNode> {
     const f = figma.createFrame();
     parent.appendChild(f);
+    this.pendingNode = f;
     this.place(f, node);
-    this.applyCommon(f, node);
+    this.applyCommon(f, node, true);
     f.clipsContent = node.clip;
     f.fills = this.fillsFor(node);
     if (node.stroke) {
@@ -87,12 +107,14 @@ export class Builder {
     }
     [f.topLeftRadius, f.topRightRadius, f.bottomRightRadius, f.bottomLeftRadius] = node.radius;
     for (const child of node.children) await this.build(child, f);
+    this.pendingNode = null;
     return f;
   }
 
   private async createText(node: H2FText, parent: ChildrenMixin & BaseNode): Promise<TextNode> {
     const t = figma.createText();
     parent.appendChild(t);
+    this.pendingNode = t;
     const runs = node.runs.filter((r) => r.start < node.characters.length);
     const first = runs[0] ?? { fontFamily: 'Inter', fontWeight: 400, italic: false };
     t.fontName = await this.deps.fonts.fontFor(first);
@@ -115,6 +137,7 @@ export class Builder {
       t.setRangeTextDecoration(run.start, end, run.decoration === 'underline' ? 'UNDERLINE' : run.decoration === 'strikethrough' ? 'STRIKETHROUGH' : 'NONE');
       t.setRangeTextCase(run.start, end, TEXT_CASE[run.textCase]);
     }
+    this.pendingNode = null;
     return t;
   }
 
@@ -125,6 +148,7 @@ export class Builder {
     try {
       fig = figma.createNodeFromSvg(entry.svg);
       parent.appendChild(fig);
+      this.pendingNode = fig;
       const sx = node.width / (fig.width || 1);
       const sy = node.height / (fig.height || 1);
       const s = Math.min(sx, sy);
@@ -134,11 +158,15 @@ export class Builder {
       this.deps.warnings.push(`SVG "${node.name}" could not be parsed by Figma; using a rasterized copy.`);
       fig = figma.createFrame();
       parent.appendChild(fig);
+      this.pendingNode = fig;
       fig.fills = [{ type: 'IMAGE', imageHash: figma.createImage(entry.fallback).hash, scaleMode: 'FIT' }];
     }
     this.place(fig, node);
-    this.applyCommon(fig, node);
+    // Both branches above produce a real FrameNode (createNodeFromSvg wraps the vector shapes in
+    // one; the rasterized fallback is a plain frame), so PASS_THROUGH is offered here too.
+    this.applyCommon(fig, node, true);
     fig.clipsContent = false;
+    this.pendingNode = null;
     return fig;
   }
 

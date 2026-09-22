@@ -1,4 +1,4 @@
-import { countNodes, validateDocument, type H2FDocument } from '@h2f/schema';
+import { countNodes, validateDocument, walkNodes, type H2FDocument } from '@h2f/schema';
 import type { MainToUi, UiToMain } from '../messages';
 import { prepareImageAsset, rasterizeSvg } from './assets';
 
@@ -35,23 +35,44 @@ function loadText(text: string): void {
   try { parsed = JSON.parse(text); } catch (e) { setLog(`Not valid JSON: ${e instanceof Error ? e.message : String(e)}`, true); return; }
   const result = validateDocument(parsed);
   if (!result.ok) { setLog(`This file is not a valid html2figma document:\n${result.errors.slice(0, 8).join('\n')}`, true); current = null; importBtn.disabled = true; return; }
-  current = result.document;
-  const assets = Object.values(current.assets);
-  const bytes = assets.reduce((n, a) => n + (a.kind === 'image' ? a.data.length * 0.75 : a.svg.length), 0);
-  $('info').classList.remove('hidden');
-  $('info-title').textContent = current.source.title || '(untitled)';
-  $('info-url').textContent = current.source.url;
-  $('info-viewport').textContent = `${current.source.viewport.width} × ${current.source.fullPageHeight} px`;
-  $('info-counts').textContent = `${countNodes(current.root)} layers · ${assets.length} assets · ${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  setLog(current.warnings.length ? `${current.warnings.length} capture warning(s):\n${current.warnings.slice(0, 20).join('\n')}` : '');
-  importBtn.disabled = false;
-  setProgress('Ready to import', 0, 1);
+  // I9: everything below (in particular the byte-size reduce, which reads `.data`/`.svg` off
+  // every asset) previously ran unguarded. validateDocument now checks each asset's own shape,
+  // so this should no longer be reachable with malformed data — but wrapping it too means any
+  // other unexpected failure here is reported instead of silently wedging the UI.
+  try {
+    current = result.document;
+    const assets = Object.values(current.assets);
+    const bytes = assets.reduce((n, a) => n + (a.kind === 'image' ? a.data.length * 0.75 : a.svg.length), 0);
+    $('info').classList.remove('hidden');
+    $('info-title').textContent = current.source.title || '(untitled)';
+    $('info-url').textContent = current.source.url;
+    $('info-viewport').textContent = `${current.source.viewport.width} × ${current.source.fullPageHeight} px`;
+    $('info-counts').textContent = `${countNodes(current.root)} layers · ${assets.length} assets · ${(bytes / 1024 / 1024).toFixed(1)} MB`;
+    setLog(current.warnings.length ? `${current.warnings.length} capture warning(s):\n${current.warnings.slice(0, 20).join('\n')}` : '');
+    importBtn.disabled = false;
+    setProgress('Ready to import', 0, 1);
+  } catch (e) {
+    current = null;
+    importBtn.disabled = true;
+    setLog(`This file could not be loaded: ${e instanceof Error ? e.message : String(e)}`, true);
+  }
+}
+
+// I8: rasterizing every svg asset "just in case" uploads an orphan, oversized (2x) PNG for every
+// inline icon on the page, most of which Figma's own createNodeFromSvg parses fine and never
+// needs. Only assets an ImagePaint actually names need the fallback proactively — that's the one
+// path (CSS background-image on an svg) main.ts can't otherwise resolve a fill for.
+function imagePaintAssetIds(doc: H2FDocument): Set<string> {
+  const ids = new Set<string>();
+  walkNodes(doc.root, (n) => { for (const f of n.fills) if (f.type === 'image') ids.add(f.assetId); });
+  return ids;
 }
 
 async function startImport(doc: H2FDocument): Promise<void> {
   importBtn.disabled = true;
   assetWarnings = [];
   const assets = Object.values(doc.assets);
+  const neededAsImage = imagePaintAssetIds(doc);
   post({ type: 'begin', assetCount: assets.length, options: { newPage: $<HTMLInputElement>('opt-newpage').checked } });
   let i = 0;
   for (const asset of assets) {
@@ -62,10 +83,14 @@ async function startImport(doc: H2FDocument): Promise<void> {
       if (prepared) post({ type: 'asset', id: asset.id, bytes: prepared.bytes, width: prepared.width, height: prepared.height });
       else assetWarnings.push(`Could not decode image ${asset.id} (${asset.mime}); its fill will be skipped.`);
     } else {
-      const fallback = await rasterizeSvg(asset.svg, asset.width, asset.height);
+      // I8: only rasterize when some ImagePaint actually references this svg id. A vector node
+      // using this asset doesn't need a raster at all — createVector only falls back to it when
+      // figma.createNodeFromSvg itself throws, which is the uncommon case.
+      const needsFallback = neededAsImage.has(asset.id);
+      const fallback = needsFallback ? await rasterizeSvg(asset.svg, asset.width, asset.height) : undefined;
       // C3: rasterizeSvg failing produced no message anywhere before this fix — the ImagePaint
-      // (if any) that names this asset would silently resolve to nothing on the main side.
-      if (!fallback) assetWarnings.push(`Could not rasterize SVG asset ${asset.id} as a fallback; if Figma can't parse it directly, its fill will be skipped.`);
+      // that names this asset would silently resolve to nothing on the main side.
+      if (needsFallback && !fallback) assetWarnings.push(`Could not rasterize SVG asset ${asset.id} as a fallback; if Figma can't parse it directly, its fill will be skipped.`);
       post({ type: 'svg', id: asset.id, svg: asset.svg, fallback });
     }
     if (i % 10 === 0) await new Promise((r) => setTimeout(r, 0));
@@ -74,8 +99,17 @@ async function startImport(doc: H2FDocument): Promise<void> {
 }
 
 async function readFile(file: File): Promise<void> {
-  setProgress(`Reading ${file.name}`, 0, 1);
-  loadText(await file.text());
+  try {
+    setProgress(`Reading ${file.name}`, 0, 1);
+    loadText(await file.text());
+  } catch (e) {
+    // I9: file.text() rejecting (or any other failure reading the drop/picked file) previously
+    // escaped as an unhandled rejection — the progress bar just stopped with nothing logged.
+    setProgress('Could not read file', 0, 1);
+    setLog(`Could not read ${file.name}: ${e instanceof Error ? e.message : String(e)}`, true);
+    current = null;
+    importBtn.disabled = true;
+  }
 }
 
 drop.addEventListener('click', () => fileInput.click());
@@ -85,7 +119,16 @@ for (const evt of ['dragenter', 'dragover']) drop.addEventListener(evt, (e) => {
 for (const evt of ['dragleave', 'drop']) drop.addEventListener(evt, (e) => { e.preventDefault(); drop.classList.remove('over'); });
 drop.addEventListener('drop', (e) => { const f = (e as DragEvent).dataTransfer?.files?.[0]; if (f) void readFile(f); });
 paste.addEventListener('input', () => { const t = paste.value.trim(); if (t.startsWith('{')) { loadText(t); paste.value = ''; } });
-importBtn.addEventListener('click', () => { if (current) void startImport(current); });
+importBtn.addEventListener('click', () => {
+  if (!current) return;
+  // I9: an unhandled rejection here (e.g. a truly unexpected failure inside startImport) used to
+  // escape silently — the import button stayed disabled and the progress bar just stopped.
+  startImport(current).catch((e) => {
+    setProgress('Import failed', 0, 1);
+    setLog(`Could not import: ${e instanceof Error ? e.message : String(e)}`, true);
+    importBtn.disabled = false;
+  });
+});
 
 window.onmessage = (event: MessageEvent<{ pluginMessage?: MainToUi }>) => {
   const msg = event.data?.pluginMessage;
