@@ -44,4 +44,29 @@ describe('preparePage', () => {
     expect(document.getElementById('hidden')!.style.getPropertyValue('opacity')).toBe('0');
     expect(result.warnings).toEqual([]);
   });
+
+  it('restores forced styles even when preparation throws partway through', async () => {
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+    document.body.innerHTML = `
+      <div id="first" style="opacity: 0; transform: translateY(24px); transition-property: all; transition-duration: 0.6s"></div>
+      <div id="second" style="opacity: 0; transform: translateY(24px); transition-property: all; transition-duration: 0.6s"></div>`;
+    const first = document.getElementById('first')!;
+    const second = document.getElementById('second')!;
+    const beforeFirst = first.getAttribute('style');
+    const beforeSecond = second.getAttribute('style');
+    // The first element (in document order) gets forced visible normally; the second element's
+    // getComputedStyle call is made to throw, simulating a pathological/detached element failing
+    // mid-scan. preparePage must still undo the mutation it already made to the first element.
+    const realGetComputedStyle = window.getComputedStyle.bind(window);
+    let calls = 0;
+    vi.spyOn(window, 'getComputedStyle').mockImplementation((el: Element) => {
+      calls++;
+      if (calls === 2) throw new Error('computed style boom');
+      return realGetComputedStyle(el);
+    });
+    await expect(preparePage(window, document.documentElement, { revealAnimations: true })).rejects.toThrow('computed style boom');
+    expect(first.getAttribute('style')).toBe(beforeFirst);
+    expect(second.getAttribute('style')).toBe(beforeSecond);
+    vi.restoreAllMocks();
+  }, 15000);
 });

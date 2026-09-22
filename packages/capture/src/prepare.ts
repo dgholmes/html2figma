@@ -21,37 +21,53 @@ export async function preparePage(win: Window, root: Element, opts: { revealAnim
     touched.push({ el, style: el.getAttribute('style') });
     for (const [k, v] of Object.entries(css)) el.style.setProperty(k, v, 'important');
   };
-
-  for (const img of Array.from(root.querySelectorAll<HTMLImageElement>('img[loading="lazy"]'))) {
-    loadingRestores.push({ img, value: img.getAttribute('loading') ?? '' });
-    img.setAttribute('loading', 'eager');
-  }
-
-  if (opts.revealAnimations) {
-    const total = Math.max(doc.documentElement.scrollHeight, 1);
-    const step = Math.max(200, Math.floor((win.innerHeight || 800) * 0.8));
-    for (let y = 0; y <= total; y += step) {
-      win.scrollTo(0, y);
-      opts.onProgress?.('Scrolling to trigger animations', Math.min(y, total), total);
-      await sleep(120);
+  // Built before any mutation happens so a throw partway through the reveal/animation-pause work
+  // below (e.g. getComputedStyle or setProperty failing on a pathological or detached element
+  // during the multi-second scroll sequence) can still be undone from the catch block: without
+  // this, an exception would abort the function before its `return` ever hands a restore function
+  // back to the caller, leaving every already-forced style stuck on the live page.
+  const restore = () => {
+    for (const t of touched.reverse()) {
+      if (t.style === null) t.el.removeAttribute('style'); else t.el.setAttribute('style', t.style);
     }
-    await sleep(1500);
-    win.scrollTo(0, 0);
-    await nextFrame(win);
-    await sleep(300);
-    let forced = 0;
-    for (const el of Array.from(doc.querySelectorAll<HTMLElement>('body *'))) {
-      const cs = win.getComputedStyle(el);
-      if (shouldForceReveal(cs)) {
-        setStyle(el, { opacity: '1', transform: 'none', visibility: 'visible', transition: 'none', animation: 'none' });
-        forced++;
-      } else if (cs.animationName && cs.animationName !== 'none' && /infinite/.test(cs.animationIterationCount || '')) {
-        setStyle(el, { 'animation-play-state': 'paused' });
+    for (const r of loadingRestores) r.img.setAttribute('loading', r.value);
+  };
+
+  try {
+    for (const img of Array.from(root.querySelectorAll<HTMLImageElement>('img[loading="lazy"]'))) {
+      loadingRestores.push({ img, value: img.getAttribute('loading') ?? '' });
+      img.setAttribute('loading', 'eager');
+    }
+
+    if (opts.revealAnimations) {
+      const total = Math.max(doc.documentElement.scrollHeight, 1);
+      const step = Math.max(200, Math.floor((win.innerHeight || 800) * 0.8));
+      for (let y = 0; y <= total; y += step) {
+        win.scrollTo(0, y);
+        opts.onProgress?.('Scrolling to trigger animations', Math.min(y, total), total);
+        await sleep(120);
       }
+      await sleep(1500);
+      win.scrollTo(0, 0);
+      await nextFrame(win);
+      await sleep(300);
+      let forced = 0;
+      for (const el of Array.from(doc.querySelectorAll<HTMLElement>('body *'))) {
+        const cs = win.getComputedStyle(el);
+        if (shouldForceReveal(cs)) {
+          setStyle(el, { opacity: '1', transform: 'none', visibility: 'visible', transition: 'none', animation: 'none' });
+          forced++;
+        } else if (cs.animationName && cs.animationName !== 'none' && /infinite/.test(cs.animationIterationCount || '')) {
+          setStyle(el, { 'animation-play-state': 'paused' });
+        }
+      }
+      if (forced) warnings.push(`Forced ${forced} scroll-reveal element(s) to their visible state.`);
+    } else {
+      win.scrollTo(0, 0);
     }
-    if (forced) warnings.push(`Forced ${forced} scroll-reveal element(s) to their visible state.`);
-  } else {
-    win.scrollTo(0, 0);
+  } catch (e) {
+    restore();
+    throw e;
   }
 
   for (const v of Array.from(doc.querySelectorAll('video'))) { try { v.pause(); } catch { /* ignore */ } }
@@ -66,13 +82,5 @@ export async function preparePage(win: Window, root: Element, opts: { revealAnim
   }
   await nextFrame(win);
 
-  return {
-    warnings,
-    restore: () => {
-      for (const t of touched.reverse()) {
-        if (t.style === null) t.el.removeAttribute('style'); else t.el.setAttribute('style', t.style);
-      }
-      for (const r of loadingRestores) r.img.setAttribute('loading', r.value);
-    },
-  };
+  return { warnings, restore };
 }
