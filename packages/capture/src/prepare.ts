@@ -40,6 +40,16 @@ export async function preparePage(win: Window, root: Element, opts: { revealAnim
     }
 
     if (opts.revealAnimations) {
+      // A page with `scroll-behavior: smooth` on <html> (or <body>, when it's the actual
+      // scrolling element) turns every `scrollTo` below into an async animation instead of an
+      // instant jump. The final `scrollTo(0, 0)` reset would then still be mid-animation —
+      // scrollY nonzero — when geometry is captured a few lines down. That's invisible for
+      // normally-flowing elements (getBoundingClientRect + scrollY is scroll-invariant for
+      // them), but a `position: fixed` element's rect is already viewport-relative, so adding a
+      // leftover nonzero scrollY shifts it away from its true y=0. Force instant scrolling for
+      // the duration of this pass; `restore()` undoes it below.
+      setStyle(doc.documentElement, { 'scroll-behavior': 'auto' });
+      if (doc.body) setStyle(doc.body, { 'scroll-behavior': 'auto' });
       const total = Math.max(doc.documentElement.scrollHeight, 1);
       const step = Math.max(200, Math.floor((win.innerHeight || 800) * 0.8));
       for (let y = 0; y <= total; y += step) {

@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:browser": "node packages/capture/test-browser/run.mjs",
+    "test:acceptance": "node packages/capture/test-acceptance/layrd.mjs && vitest run packages/figma-plugin/test/acceptance.layrd.test.ts",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
