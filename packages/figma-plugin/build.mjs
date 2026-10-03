@@ -3,7 +3,7 @@ import { cpSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
 const watch = process.argv.includes('--watch');
 mkdirSync('dist', { recursive: true });
-cpSync('manifest.json', 'dist/manifest.json');
+cpSync('manifest.template.json', 'dist/manifest.json');
 
 const mainOpts = { entryPoints: ['src/main/index.ts'], bundle: true, format: 'iife', target: 'es2020', outfile: 'dist/main.js', logLevel: 'info' };
 const uiOpts = {

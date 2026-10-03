@@ -14,11 +14,18 @@ npm install
 npm run build
 ```
 
-This builds both `packages/extension/dist` and `packages/figma-plugin/dist`.
+This builds both `packages/extension/dist` and `packages/figma-plugin/dist`. Run it before loading
+either side — `dist/` is generated, so a fresh clone does not have it yet.
 
 **Chrome:** open `chrome://extensions`, turn on Developer mode, click **Load unpacked**, choose `packages/extension/dist`.
 
-**Figma desktop:** **Plugins → Development → Import plugin from manifest…**, choose `packages/figma-plugin/dist/manifest.json`.
+**Figma desktop:** **Plugins → Development → Import plugin from manifest…**, choose
+`packages/figma-plugin/dist/manifest.json` — the copy inside **`dist/`**.
+
+> If Figma reports `Unable to load code: ENOENT … packages/figma-plugin/main.js`, it was pointed at a
+> manifest with no built code beside it. Run `npm run build`, then import the manifest from `dist/`.
+> `packages/figma-plugin/manifest.template.json` is only the build input; it is not importable, and
+> `dist/manifest.json` is generated from it.
 
 ## Use
 
