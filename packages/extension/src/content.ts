@@ -1,5 +1,5 @@
 import { capturePage } from '@h2f/capture';
-import { CLIPBOARD_LIMIT, type CaptureSettings, type ToBackground, type ToContent } from './messages';
+import { type CaptureSettings, type ToBackground, type ToContent } from './messages';
 
 export interface ContentIO {
   send(msg: ToBackground): Promise<unknown>;
@@ -7,6 +7,15 @@ export interface ContentIO {
   capture: typeof capturePage;
   location: { hostname: string };
 }
+
+/**
+ * The page keeps its own capture so the popup can copy it on demand. Parking it in
+ * chrome.storage.session instead would cap it at that store's 10 MB quota, which a real
+ * page exceeds.
+ */
+let heldCapture: string | null = null;
+
+export function getHeldCapture(): string | null { return heldCapture; }
 
 export function makeFileName(host: string, now = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -16,17 +25,21 @@ export function makeFileName(host: string, now = new Date()): string {
 
 export async function runCapture(settings: CaptureSettings, io: ContentIO): Promise<void> {
   try {
+    heldCapture = null;
     const { document: doc } = await io.capture({
       revealAnimations: settings.revealAnimations,
       captureVideoFrames: settings.captureVideoFrames,
+      imageQuality: settings.imageQuality,
       loader: { fetchAsBase64: (url) => io.send({ type: 'fetchAsset', url }) as Promise<{ mime: string; data: string } | null> },
       onProgress: (stage, done, total) => { void io.send({ type: 'progress', stage, done, total }); },
     });
     const json = JSON.stringify(doc);
     const fileName = makeFileName(io.location.hostname);
+    heldCapture = json;
     io.download(json, fileName);
-    await io.send({ type: 'complete', fileName, size: json.length, warnings: doc.warnings, json: json.length < CLIPBOARD_LIMIT ? json : undefined });
+    await io.send({ type: 'complete', fileName, size: json.length, warnings: doc.warnings });
   } catch (e) {
+    heldCapture = null;
     await io.send({ type: 'failed', error: e instanceof Error ? `${e.message}\n${e.stack ?? ''}` : String(e) });
   }
 }
@@ -60,6 +73,7 @@ if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage && !window.__h2fC
     location: window.location,
   };
   chrome.runtime.onMessage.addListener((msg: ToContent, _sender, sendResponse) => {
+    if (msg?.type === 'getCapture') { sendResponse({ json: heldCapture }); return false; }
     if (msg?.type === 'run') {
       if (window.__h2fRunning) { sendResponse({ ok: false, reason: 'already running' }); return false; }
       window.__h2fRunning = true;

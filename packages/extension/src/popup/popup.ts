@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, JOB_KEY, RESULT_KEY, SETTINGS_KEY, type CaptureSettings, type JobState, type ToBackground } from '../messages';
+import { COPY_LIMIT, DEFAULT_SETTINGS, JOB_KEY, SETTINGS_KEY, type CaptureSettings, type ImageQualityName, type JobState, type ToBackground } from '../messages';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const send = (msg: ToBackground) => chrome.runtime.sendMessage(msg);
@@ -22,8 +22,8 @@ export function render(state: JobState, el: PopupElements): void {
   }
   if (state.status === 'done') {
     const mb = ((state.size ?? 0) / 1024 / 1024).toFixed(1);
-    el.resultText.textContent = `Saved ${state.fileName ?? 'file'} (${mb} MB) to your Downloads folder. Open the html2figma plugin in Figma and drop the file in.`;
-    el.copy.classList.toggle('hidden', !state.hasClipboardCopy);
+    el.resultText.textContent = `Saved ${state.fileName ?? 'file'} (${mb} MB) to Downloads. Click Copy to Figma, then paste into the html2figma plugin — or drop the file in.`;
+    el.copy.classList.toggle('hidden', !state.canCopy);
     const warnings = state.warnings ?? [];
     el.warningsBox.classList.toggle('hidden', warnings.length === 0);
     el.warningsSummary.textContent = `${warnings.length} warning${warnings.length === 1 ? '' : 's'}`;
@@ -40,13 +40,17 @@ async function main(): Promise<void> {
   $('version').textContent = `v${chrome.runtime.getManifest().version}`;
   const reveal = $<HTMLInputElement>('opt-reveal');
   const video = $<HTMLInputElement>('opt-video');
+  const quality = $<HTMLSelectElement>('opt-quality');
   const stored = (await chrome.storage.local.get(SETTINGS_KEY))[SETTINGS_KEY] as CaptureSettings | undefined;
   const settings = { ...DEFAULT_SETTINGS, ...stored };
   reveal.checked = settings.revealAnimations;
   video.checked = settings.captureVideoFrames;
-  const saveSettings = () => chrome.storage.local.set({ [SETTINGS_KEY]: { revealAnimations: reveal.checked, captureVideoFrames: video.checked } satisfies CaptureSettings });
+  quality.value = settings.imageQuality;
+  const currentSettings = (): CaptureSettings => ({ revealAnimations: reveal.checked, captureVideoFrames: video.checked, imageQuality: quality.value as ImageQualityName });
+  const saveSettings = () => chrome.storage.local.set({ [SETTINGS_KEY]: currentSettings() });
   reveal.addEventListener('change', saveSettings);
   video.addEventListener('change', saveSettings);
+  quality.addEventListener('change', saveSettings);
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const url = tab?.url ?? '';
@@ -61,14 +65,31 @@ async function main(): Promise<void> {
   el.capture.addEventListener('click', async () => {
     if (!tab?.id || !capturable) return;
     await saveSettings();
-    await send({ type: 'start', tabId: tab.id, settings: { revealAnimations: reveal.checked, captureVideoFrames: video.checked } });
+    await send({ type: 'start', tabId: tab.id, settings: currentSettings() });
   });
-  el.copy.addEventListener('click', async () => {
-    const json = (await chrome.storage.session.get(RESULT_KEY))[RESULT_KEY] as string | undefined;
-    if (!json) { el.copy.textContent = 'Nothing to copy'; return; }
-    await navigator.clipboard.writeText(json);
-    el.copy.textContent = 'Copied!';
-    setTimeout(() => { el.copy.textContent = 'Copy JSON'; }, 1500);
+  el.copy.addEventListener('click', () => {
+    const say = (text: string, revert = 2500) => {
+      el.copy.textContent = text;
+      if (revert) setTimeout(() => { el.copy.textContent = 'Copy to Figma'; }, revert);
+    };
+    // The capture lives in the page and takes a moment to come across, which is longer than a
+    // click's user activation survives. Handing the clipboard a promise starts the write now
+    // and fills it in when the data lands, so the gesture is never lost.
+    const payload = (async () => {
+      const res = (await send({ type: 'requestCapture' })) as { json: string | null } | undefined;
+      const json = res?.json;
+      if (!json) throw new Error('The page no longer holds this capture. Re-capture, or drop the downloaded file into the plugin.');
+      if (json.length > COPY_LIMIT) throw new Error('This capture is too large to copy. Drop the downloaded file into the plugin instead.');
+      return new Blob([json], { type: 'text/plain' });
+    })();
+    say('Copying…', 0);
+    const write = typeof ClipboardItem === 'function'
+      ? navigator.clipboard.write([new ClipboardItem({ 'text/plain': payload })])
+      : payload.then((blob) => blob.text()).then((text) => navigator.clipboard.writeText(text));
+    write.then(
+      () => say('Copied — paste into the plugin'),
+      (e: unknown) => { say(e instanceof Error ? e.message : 'Copy failed', 6000); },
+    );
   });
   $('copy-error').addEventListener('click', () => navigator.clipboard.writeText(el.errorText.textContent ?? ''));
   for (const id of ['reset', 'reset-error']) $(id).addEventListener('click', () => send({ type: 'reset' }));

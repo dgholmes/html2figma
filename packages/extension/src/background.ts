@@ -1,14 +1,15 @@
-import { JOB_KEY, RESULT_KEY, type JobState, type ToBackground, type ToContent } from './messages';
+import { JOB_KEY, type JobState, type ToBackground, type ToContent } from './messages';
 
 export const MAX_ASSET_BYTES = 25 * 1024 * 1024;
 
 export interface BackgroundDeps {
   getJob(): Promise<JobState>;
   setJob(patch: Partial<JobState>): Promise<JobState>;
-  setResult(json: string | undefined): Promise<void>;
   inject(tabId: number): Promise<void>;
   sendToTab(tabId: number, msg: ToContent): Promise<void>;
   fetchAsset(url: string): Promise<{ mime: string; data: string } | null>;
+  /** Ask the tab that produced the capture to hand it over, or null if it no longer holds one. */
+  requestCapture(tabId: number): Promise<string | null>;
   now(): number;
 }
 
@@ -44,8 +45,7 @@ export async function fetchAsset(url: string, fetchImpl: typeof fetch = fetch): 
 export async function handleMessage(msg: ToBackground, deps: BackgroundDeps): Promise<unknown> {
   switch (msg.type) {
     case 'start': {
-      await deps.setResult(undefined);
-      await deps.setJob({ status: 'running', tabId: msg.tabId, stage: 'Injecting capture script', done: 0, total: 1, error: undefined, fileName: undefined, size: undefined, warnings: undefined, hasClipboardCopy: false, startedAt: deps.now(), finishedAt: undefined });
+      await deps.setJob({ status: 'running', tabId: msg.tabId, stage: 'Injecting capture script', done: 0, total: 1, error: undefined, fileName: undefined, size: undefined, warnings: undefined, canCopy: false, startedAt: deps.now(), finishedAt: undefined });
       try {
         await deps.inject(msg.tabId);
         await deps.sendToTab(msg.tabId, { type: 'run', settings: msg.settings });
@@ -56,12 +56,16 @@ export async function handleMessage(msg: ToBackground, deps: BackgroundDeps): Pr
     }
     case 'fetchAsset':
       return deps.fetchAsset(msg.url);
+    case 'requestCapture': {
+      const tabId = (await deps.getJob()).tabId;
+      if (tabId === undefined) return { json: null };
+      try { return { json: await deps.requestCapture(tabId) }; } catch { return { json: null }; }
+    }
     case 'progress':
       await deps.setJob({ stage: msg.stage, done: msg.done, total: msg.total });
       return { ok: true };
     case 'complete':
-      await deps.setResult(msg.json);
-      await deps.setJob({ status: 'done', fileName: msg.fileName, size: msg.size, warnings: msg.warnings, hasClipboardCopy: !!msg.json, stage: 'Done', finishedAt: deps.now() });
+      await deps.setJob({ status: 'done', fileName: msg.fileName, size: msg.size, warnings: msg.warnings, canCopy: true, stage: 'Done', finishedAt: deps.now() });
       return { ok: true };
     case 'failed':
       await deps.setJob({ status: 'error', error: msg.error, finishedAt: deps.now() });
@@ -69,8 +73,7 @@ export async function handleMessage(msg: ToBackground, deps: BackgroundDeps): Pr
     case 'getState':
       return deps.getJob();
     case 'reset':
-      await deps.setResult(undefined);
-      await deps.setJob({ status: 'idle', tabId: undefined, stage: undefined, done: undefined, total: undefined, fileName: undefined, size: undefined, error: undefined, warnings: undefined, startedAt: undefined, finishedAt: undefined, hasClipboardCopy: undefined });
+      await deps.setJob({ status: 'idle', tabId: undefined, stage: undefined, done: undefined, total: undefined, fileName: undefined, size: undefined, error: undefined, warnings: undefined, startedAt: undefined, finishedAt: undefined, canCopy: undefined });
       return { ok: true };
   }
 }
@@ -87,10 +90,13 @@ if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
       await storage.set({ [JOB_KEY]: next });
       return next;
     },
-    setResult: async (json) => { if (json === undefined) await storage.remove(RESULT_KEY); else await storage.set({ [RESULT_KEY]: json }); },
     inject: async (tabId) => { await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] }); },
     sendToTab: async (tabId, msg) => { await chrome.tabs.sendMessage(tabId, msg); },
     fetchAsset: (url) => fetchAsset(url),
+    requestCapture: async (tabId) => {
+      const res = await chrome.tabs.sendMessage(tabId, { type: 'getCapture' } satisfies ToContent) as { json: string | null } | undefined;
+      return res?.json ?? null;
+    },
     now: () => Date.now(),
   };
   chrome.runtime.onMessage.addListener((msg: ToBackground, _sender, sendResponse) => {

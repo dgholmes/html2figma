@@ -4,41 +4,39 @@ import type { JobState } from '../src/messages';
 
 function deps(over: Partial<BackgroundDeps> = {}) {
   let job: JobState = { status: 'idle' };
-  let result: string | undefined;
   const d: BackgroundDeps = {
     getJob: async () => job,
     setJob: async (patch) => { job = { ...job, ...patch }; return job; },
-    setResult: async (json) => { result = json; },
     inject: vi.fn(async () => {}),
     sendToTab: vi.fn(async () => {}),
     fetchAsset: vi.fn(async () => ({ mime: 'image/png', data: 'QUJD' })),
+    requestCapture: vi.fn(async () => null),
     now: () => 1000,
     ...over,
   };
-  return { d, job: () => job, result: () => result };
+  return { d, job: () => job };
 }
 
 describe('handleMessage', () => {
   it('start injects the content script, sends run, and marks the job running', async () => {
     const { d, job } = deps();
-    await handleMessage({ type: 'start', tabId: 7, settings: { revealAnimations: true, captureVideoFrames: false } }, d);
+    await handleMessage({ type: 'start', tabId: 7, settings: { revealAnimations: true, captureVideoFrames: false, imageQuality: 'balanced' } }, d);
     expect(d.inject).toHaveBeenCalledWith(7);
-    expect(d.sendToTab).toHaveBeenCalledWith(7, { type: 'run', settings: { revealAnimations: true, captureVideoFrames: false } });
+    expect(d.sendToTab).toHaveBeenCalledWith(7, { type: 'run', settings: { revealAnimations: true, captureVideoFrames: false, imageQuality: 'balanced' } });
     expect(job()).toMatchObject({ status: 'running', tabId: 7, startedAt: 1000 });
   });
   it('start records an error when injection fails', async () => {
     const { d, job } = deps({ inject: vi.fn(async () => { throw new Error('Cannot access chrome:// URL'); }) });
-    await handleMessage({ type: 'start', tabId: 1, settings: { revealAnimations: true, captureVideoFrames: true } }, d);
+    await handleMessage({ type: 'start', tabId: 1, settings: { revealAnimations: true, captureVideoFrames: true, imageQuality: 'balanced' } }, d);
     expect(job()).toMatchObject({ status: 'error' });
     expect(job().error).toMatch(/chrome:\/\//);
   });
   it('progress, complete and failed update the job; complete stores small json', async () => {
-    const { d, job, result } = deps();
+    const { d, job } = deps();
     await handleMessage({ type: 'progress', stage: 'Capturing elements', done: 5, total: 10 }, d);
     expect(job()).toMatchObject({ stage: 'Capturing elements', done: 5, total: 10 });
-    await handleMessage({ type: 'complete', fileName: 'x.h2f.json', size: 12, warnings: ['w'], json: '{"a":1}' }, d);
-    expect(job()).toMatchObject({ status: 'done', fileName: 'x.h2f.json', size: 12, warnings: ['w'], hasClipboardCopy: true, finishedAt: 1000 });
-    expect(result()).toBe('{"a":1}');
+    await handleMessage({ type: 'complete', fileName: 'x.h2f.json', size: 12, warnings: ['w'] }, d);
+    expect(job()).toMatchObject({ status: 'done', fileName: 'x.h2f.json', size: 12, warnings: ['w'], canCopy: true, finishedAt: 1000 });
     await handleMessage({ type: 'failed', error: 'boom' }, d);
     expect(job()).toMatchObject({ status: 'error', error: 'boom' });
   });
@@ -93,5 +91,28 @@ describe('bytesToBase64', () => {
   it('encodes large arrays in chunks', () => {
     const bytes = new Uint8Array(70000).fill(65);
     expect(bytesToBase64(bytes)).toBe(btoa('A'.repeat(70000)));
+  });
+});
+
+describe('serving Copy to Figma', () => {
+  it('fetches the capture from the tab that produced it', async () => {
+    const requestCapture = vi.fn(async () => '{"version":1}');
+    const { d } = deps({ requestCapture });
+    await handleMessage({ type: 'start', tabId: 7, settings: { revealAnimations: true, captureVideoFrames: true, imageQuality: 'balanced' } }, d);
+    await handleMessage({ type: 'complete', fileName: 'x.h2f.json', size: 12, warnings: [] }, d);
+    expect(await handleMessage({ type: 'requestCapture' }, d)).toEqual({ json: '{"version":1}' });
+    expect(requestCapture).toHaveBeenCalledWith(7);
+  });
+
+  it('reports no capture when the page no longer holds one', async () => {
+    const { d } = deps({ requestCapture: vi.fn(async () => null) });
+    await handleMessage({ type: 'start', tabId: 3, settings: { revealAnimations: true, captureVideoFrames: true, imageQuality: 'balanced' } }, d);
+    expect(await handleMessage({ type: 'requestCapture' }, d)).toEqual({ json: null });
+  });
+
+  it('marks a finished job as copyable', async () => {
+    const { d, job } = deps();
+    await handleMessage({ type: 'complete', fileName: 'x.h2f.json', size: 12, warnings: [] }, d);
+    expect(job().canCopy).toBe(true);
   });
 });

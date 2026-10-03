@@ -22,3 +22,9 @@ button:disabled { opacity: .5; cursor: default; }
 .row { display: flex; gap: 8px; margin-top: 8px; }
 pre { white-space: pre-wrap; word-break: break-word; font-size: 11px; max-height: 140px; overflow: auto; margin: 6px 0 0; }
 details summary { cursor: pointer; font-size: 12px; margin-top: 8px; }
+
+.options .quality { display: block; margin-top: 8px; }
+.options .quality select { display: block; width: 100%; margin-top: 4px; font: inherit; padding: 5px 6px; border-radius: 6px; border: 1px solid color-mix(in srgb, CanvasText 20%, Canvas); background: Canvas; color: CanvasText; }
+button.secondary { flex: 1; }
+button.primary.inline { width: auto; flex: 2; margin-top: 0; }
+.result .row button { margin-top: 0; }

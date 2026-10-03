@@ -33,7 +33,19 @@ either side — `dist/` is generated, so a fresh clone does not have it yet.
 2. Click the extension icon → **Capture page**. Keep the tab in the foreground. A `<host>-<date>.h2f.json` file lands in Downloads.
 3. In Figma run **html2figma**, drop the file in, click **Import into Figma**.
 
-Options: *Reveal scroll animations* (default on) and *Capture videos as still frames* (default on). Files under 5 MB can also be copied to the clipboard and pasted into the plugin.
+Options: *Reveal scroll animations* (default on), *Capture videos as still frames* (default on),
+and *Image quality*.
+
+**Copy to Figma.** After a capture the popup offers **Copy to Figma**: click it, then paste into
+the plugin's box with Cmd/Ctrl+V. The capture never passes through extension storage, so there is
+no small size cap — but it does live in the captured page, so copy before navigating away. The
+downloaded `.h2f.json` remains the fallback and works regardless.
+
+**Image quality** controls how images are stored. Images are kept at the size they are actually
+displayed (times a density factor), encoded as JPEG when opaque and PNG only when they carry
+transparency. *Balanced* (2x, the default) captured layrd.pro at 7.9 MB where storing source bytes
+produced 42.2 MB; *High* uses 3x; *Original* keeps every image's source bytes untouched, which is
+what you want if you intend to pull full-resolution assets out of the Figma file.
 
 ## Development
 

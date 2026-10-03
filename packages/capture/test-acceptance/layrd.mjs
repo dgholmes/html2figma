@@ -207,6 +207,22 @@ check('oklch dark background resolved (positioning)', !!posColor && posColor.r <
 check('oklch light background resolved (built)', !!builtColor && builtColor.r > 0.8, JSON.stringify(builtColor));
 check('oklch dark background resolved (waitlist)', !!waitColor && waitColor.r < 0.3, JSON.stringify(waitColor));
 
+// ---- 7b: size budget ----------------------------------------------------------------------
+// Before images were stored at their display size this same page captured at 42.23 MB, of
+// which 42.09 MB was image payloads against 0.15 MB of actual layer tree; it now lands around
+// 7.4 MB. The budget guards the regression that would quietly break Copy to Figma, which has
+// to move the whole capture through one runtime message and one clipboard write.
+const SIZE_BUDGET_MB = 12;
+const sizeMb = Buffer.byteLength(JSON.stringify(doc)) / 1048576;
+check(`capture stays under ${SIZE_BUDGET_MB} MB`, sizeMb < SIZE_BUDGET_MB, `${sizeMb.toFixed(2)} MB`);
+
+const videoFrames = Object.values(doc.assets).filter((a) => a.origin === 'video-frame');
+check('video frames stored as jpeg, not png', videoFrames.length > 0 && videoFrames.every((a) => a.mime === 'image/jpeg'),
+  [...new Set(videoFrames.map((a) => a.mime))].join(', '));
+
+const oversized = Object.values(doc.assets).filter((a) => a.width > 4096 || a.height > 4096);
+check('no stored asset exceeds the 4096 px Figma limit', oversized.length === 0, `${oversized.length} oversized`);
+
 // ---- 8: summary ---------------------------------------------------------------------------
 const nodeCount = allNodes(doc.root).length;
 const assetCount = Object.keys(doc.assets).length;

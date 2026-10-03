@@ -118,7 +118,15 @@ fileInput.addEventListener('change', () => { const f = fileInput.files?.[0]; if 
 for (const evt of ['dragenter', 'dragover']) drop.addEventListener(evt, (e) => { e.preventDefault(); drop.classList.add('over'); });
 for (const evt of ['dragleave', 'drop']) drop.addEventListener(evt, (e) => { e.preventDefault(); drop.classList.remove('over'); });
 drop.addEventListener('drop', (e) => { const f = (e as DragEvent).dataTransfer?.files?.[0]; if (f) void readFile(f); });
-paste.addEventListener('input', () => { const t = paste.value.trim(); if (t.startsWith('{')) { loadText(t); paste.value = ''; } });
+paste.addEventListener('input', () => {
+  const t = paste.value.trim();
+  if (!t) return;
+  if (t.startsWith('{')) { loadText(t); paste.value = ''; return; }
+  setLog('That does not look like a captured document. Click "Copy to Figma" in the extension, then paste here.', true);
+});
+// A multi-megabyte paste takes a moment to land; say so rather than looking frozen.
+paste.addEventListener('paste', () => { setProgress('Reading pasted capture…', 0, 1); });
+paste.focus();
 importBtn.addEventListener('click', () => {
   if (!current) return;
   // I9: an unhandled rejection here (e.g. a truly unexpected failure inside startImport) used to

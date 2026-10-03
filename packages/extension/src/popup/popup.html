@@ -6,6 +6,13 @@
   <section class="options">
     <label><input type="checkbox" id="opt-reveal" checked> Reveal scroll animations before capture</label>
     <label><input type="checkbox" id="opt-video" checked> Capture videos as still frames</label>
+    <label class="quality">Image quality
+      <select id="opt-quality">
+        <option value="balanced">Balanced — smaller file, sharp at 2x</option>
+        <option value="high">High — larger file, sharp at 3x</option>
+        <option value="original">Original — full-resolution source images</option>
+      </select>
+    </label>
   </section>
   <button id="capture" class="primary">Capture page</button>
   <p class="hint">Keep this tab in the foreground while capturing. Scroll the page and pause videos on the frame you want first.</p>
@@ -15,7 +22,7 @@
   </section>
   <section id="result" class="result hidden">
     <div id="result-text"></div>
-    <div class="row"><button id="copy" class="secondary">Copy JSON</button><button id="reset" class="secondary">New capture</button></div>
+    <div class="row"><button id="copy" class="primary inline">Copy to Figma</button><button id="reset" class="secondary">New capture</button></div>
     <details id="warnings-box"><summary id="warnings-summary"></summary><pre id="warnings"></pre></details>
   </section>
   <section id="error" class="error hidden"><pre id="error-text"></pre><div class="row"><button id="copy-error" class="secondary">Copy details</button><button id="reset-error" class="secondary">Try again</button></div></section>
