@@ -2,15 +2,20 @@ import { SCHEMA_VERSION, type H2FDocument } from '@h2f/schema';
 import { AssetStore } from './assets';
 import { createCanvasNormalizer, parseColor } from './color';
 import type { AssetLoader } from './media';
+import { IMAGE_QUALITY, type ImageQualityName } from './optimize';
 import { preparePage, type ProgressFn } from './prepare';
 import { buildRoot, type WalkContext } from './walk';
 
 export type { AssetLoader } from './media';
 export type { H2FDocument } from '@h2f/schema';
 export type { ProgressFn } from './prepare';
+export { IMAGE_QUALITY } from './optimize';
+export type { ImageQualityName } from './optimize';
 
 export interface CaptureOptions {
   root?: Element; window?: Window; revealAnimations?: boolean; captureVideoFrames?: boolean;
+  /** How images are stored. Defaults to 'balanced'; 'original' keeps every image's source bytes. */
+  imageQuality?: ImageQualityName;
   loader: AssetLoader; onProgress?: ProgressFn;
 }
 export interface CaptureResult { document: H2FDocument }
@@ -33,6 +38,7 @@ export async function capturePage(options: CaptureOptions): Promise<CaptureResul
     let counter = 0;
     const ctx: WalkContext = {
       doc, win, store, loader: options.loader, warnings,
+      quality: IMAGE_QUALITY[options.imageQuality ?? 'balanced'] ?? IMAGE_QUALITY.balanced,
       color: (s) => parseColor(s, normalizer),
       captureVideoFrames: options.captureVideoFrames ?? true,
       isFontAvailable: (family) => { try { return doc.fonts.check(`12px "${family}"`); } catch { return true; } },

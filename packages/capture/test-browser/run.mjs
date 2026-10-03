@@ -69,6 +69,15 @@ check('media: canvas has image fill', byName(media, /canvas/)[0]?.fills.some((f)
 check('media: tiled background', byName(media, /^div/).some((n) => n.fills.some((f) => f.type === 'image' && f.scaleMode === 'tile')));
 check('media: iframe placeholder', byName(media, /^iframe.*\(not captured\)$/).length === 1);
 
+const bigPhoto = byName(media, /^img#bigphoto/)[0];
+const bigAsset = media.assets[bigPhoto?.fills.find((f) => f.type === 'image')?.assetId];
+// 2400x1600 natural, displayed in a 240x160 box, so the balanced preset stores it at 2x the box.
+check('media: oversized photo stored at its display size', bigAsset?.width === 480 && bigAsset?.height === 320,
+  `${bigAsset?.width}x${bigAsset?.height}`);
+check('media: opaque photo re-encoded as jpeg', bigAsset?.mime === 'image/jpeg', String(bigAsset?.mime));
+check('media: oversized photo payload shrank by >10x', bigAsset && bigAsset.data.length * 10 < 2400 * 1600,
+  `${(bigAsset?.data.length / 1024).toFixed(0)} kB`);
+
 await browser.close();
 server.close();
 if (failures.length) { console.error(`\n${failures.length} check(s) failed`); process.exit(1); }

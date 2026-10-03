@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AssetStore } from '../src/assets';
+import { IMAGE_QUALITY } from '../src/optimize';
 import {
   assetFromUrl, canvasAsset, decodeBase64Utf8, drawToPng, inlineSvgAsset, parseDataUrl, svgIntrinsicSize, videoAsset, type MediaContext,
 } from '../src/media';
@@ -7,7 +8,7 @@ import {
 const PNG_1x1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 
 function ctx(loader: MediaContext['loader']): MediaContext {
-  return { doc: document, store: new AssetStore(), loader, warnings: [] };
+  return { doc: document, store: new AssetStore(), loader, warnings: [], quality: IMAGE_QUALITY.original };
 }
 
 describe('helpers', () => {

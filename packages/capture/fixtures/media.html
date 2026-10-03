@@ -7,5 +7,21 @@
 <canvas class="box" id="c" width="240" height="160"></canvas>
 <div class="box" style="background: url(&quot;data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect width='20' height='20' fill='%23000'/%3E%3C/svg%3E&quot;) repeat"></div>
 <iframe class="box" src="about:blank"></iframe>
+<img class="box" id="bigphoto" style="object-fit: cover">
 <script>const ctx = document.getElementById('c').getContext('2d'); ctx.fillStyle = '#0a7'; ctx.fillRect(0, 0, 240, 160); ctx.fillStyle = '#fff'; ctx.font = '32px sans-serif'; ctx.fillText('canvas', 60, 90);</script>
+<script>
+  // A large opaque photo shown in a small box — the shape that made real captures enormous
+  // (layrd.pro stored 3664x4579 gallery photos displayed a few hundred pixels wide).
+  const big = document.createElement('canvas');
+  big.width = 2400; big.height = 1600;
+  const bg = big.getContext('2d');
+  const grad = bg.createLinearGradient(0, 0, 2400, 1600);
+  grad.addColorStop(0, '#1b4'); grad.addColorStop(0.5, '#c62'); grad.addColorStop(1, '#24a');
+  bg.fillStyle = grad; bg.fillRect(0, 0, 2400, 1600);
+  for (let i = 0; i < 6000; i++) {
+    bg.fillStyle = `rgb(${(i * 37) % 255}, ${(i * 91) % 255}, ${(i * 53) % 255})`;
+    bg.fillRect((i * 131) % 2400, (i * 197) % 1600, 7, 7);
+  }
+  document.getElementById('bigphoto').src = big.toDataURL('image/png');
+</script>
 </body></html>

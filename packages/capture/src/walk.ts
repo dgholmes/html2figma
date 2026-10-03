@@ -84,7 +84,7 @@ async function backgroundFills(cs: CSSStyleDeclaration, geo: Geometry, ctx: Walk
   for (const layer of parseBackgroundLayers(cs).reverse()) {
     const url = extractUrl(layer.image);
     if (url) {
-      const asset = await assetFromUrl(url, ctx, 'background');
+      const asset = await assetFromUrl(url, ctx, 'background', undefined, { width: geo.width, height: geo.height });
       if (!asset) continue;
       fills.push(imagePaintForBackground(layer, asset, geo));
     } else {
@@ -186,12 +186,12 @@ async function frameFor(el: Element, cs: CSSStyleDeclaration, parentAbs: Rect, c
 
   if (tag === 'IMG') {
     const img = el as HTMLImageElement;
-    const asset = await assetFromUrl(img.currentSrc || img.src, ctx, 'img', img);
+    const asset = await assetFromUrl(img.currentSrc || img.src, ctx, 'img', img, { width: geo.width, height: geo.height });
     if (asset?.kind === 'svg') vector = asset.id;
     else if (asset) fills.push(imagePaintForObjectFit(asset, cs, geo));
     else { fills.push(PLACEHOLDER_FILL); suffix = '(image not captured)'; }
   } else if (tag === 'VIDEO') {
-    const result = await videoAsset(el as HTMLVideoElement, ctx, ctx.captureVideoFrames);
+    const result = await videoAsset(el as HTMLVideoElement, ctx, ctx.captureVideoFrames, { width: geo.width, height: geo.height });
     if (result.id) fills.push(imagePaintForObjectFit(result as LoadedAsset, cs, geo));
     else fills.push(PLACEHOLDER_FILL);
     suffix = result.label;

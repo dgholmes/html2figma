@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FrameNode, TextNode, VectorNode } from '@h2f/schema';
 import { AssetStore } from '../src/assets';
+import { IMAGE_QUALITY } from '../src/optimize';
 import { parseColor } from '../src/color';
 import { buildRoot, hasVisualBox, walkElement, type WalkContext } from '../src/walk';
 
@@ -15,7 +16,7 @@ function makeCtx(over: Partial<WalkContext> = {}): WalkContext {
   let n = 0;
   return {
     doc: document, win: window, store: new AssetStore(), warnings: [],
-    loader: { fetchAsBase64: async () => null },
+    loader: { fetchAsBase64: async () => null }, quality: IMAGE_QUALITY.original,
     color: (s) => parseColor(s), captureVideoFrames: true, isFontAvailable: () => true,
     nextId: () => `n${++n}`, tick: async () => {}, pseudoEstimates: { count: 0 }, ...over,
   };

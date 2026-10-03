@@ -1,10 +1,11 @@
+import { chooseStoredRaster, encodeRaster, targetRasterSize, type ImageQuality, type Size } from './optimize';
 import type { ImageAsset } from '@h2f/schema';
 import type { AssetStore } from './assets';
 
 export const MAX_RASTER = 4096;
 
 export interface AssetLoader { fetchAsBase64(url: string): Promise<{ mime: string; data: string } | null> }
-export interface MediaContext { doc: Document; store: AssetStore; loader: AssetLoader; warnings: string[] }
+export interface MediaContext { doc: Document; store: AssetStore; loader: AssetLoader; warnings: string[]; quality: ImageQuality }
 export interface LoadedAsset { id: string; kind: 'image' | 'svg'; width: number; height: number }
 
 export function parseDataUrl(url: string): { mime: string; data: string } | null {
@@ -61,19 +62,36 @@ export function drawToPng(source: CanvasImageSource, width: number, height: numb
   }
 }
 
-function decodeImageSize(mime: string, data: string, doc: Document): Promise<{ width: number; height: number }> {
+/**
+ * Decode fetched bytes into an image element. Decoding from a `data:` URL rather than
+ * reusing the live page element matters: a cross-origin `<img>` taints the canvas, so
+ * drawing it to re-encode would throw and we would lose the optimization on exactly the
+ * images most worth shrinking.
+ */
+function loadImageFromData(mime: string, data: string, doc: Document): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
     const img = doc.createElement('img');
-    const timer = setTimeout(() => resolve({ width: 0, height: 0 }), 1500);
-    img.onload = () => { clearTimeout(timer); resolve({ width: img.naturalWidth, height: img.naturalHeight }); };
-    img.onerror = () => { clearTimeout(timer); resolve({ width: 0, height: 0 }); };
+    const timer = setTimeout(() => resolve(null), 1500);
+    img.onload = () => { clearTimeout(timer); resolve(img); };
+    img.onerror = () => { clearTimeout(timer); resolve(null); };
     img.src = `data:${mime};base64,${data}`;
   });
 }
 
-export async function assetFromUrl(url: string, ctx: MediaContext, origin: ImageAsset['origin'], fallbackImg?: HTMLImageElement): Promise<LoadedAsset | null> {
+export async function assetFromUrl(
+  url: string,
+  ctx: MediaContext,
+  origin: ImageAsset['origin'],
+  fallbackImg?: HTMLImageElement,
+  display?: Size,
+): Promise<LoadedAsset | null> {
   if (!url || url.startsWith('about:') || url.startsWith('blob:') && !fallbackImg) return null;
-  const cachedId = ctx.store.lookupUrl(url);
+  // The display size is part of the identity of what we store: one image used at two sizes
+  // needs two assets, or the second use inherits the first one's resolution.
+  const cacheKey = ctx.quality.density > 0 && display && display.width > 0
+    ? `${url}@${Math.round(display.width)}x${Math.round(display.height)}`
+    : url;
+  const cachedId = ctx.store.lookupUrl(cacheKey);
   if (cachedId) {
     const a = ctx.store.get(cachedId)!;
     return { id: cachedId, kind: a.kind, width: a.width, height: a.height };
@@ -88,7 +106,7 @@ export async function assetFromUrl(url: string, ctx: MediaContext, origin: Image
       const svg = decodeBase64Utf8(fetched.data);
       const dims = svgIntrinsicSize(svg) ?? { width: fallbackImg?.naturalWidth || 0, height: fallbackImg?.naturalHeight || 0 };
       const id = ctx.store.addSvg(svg, dims.width, dims.height);
-      ctx.store.rememberUrl(url, id);
+      ctx.store.rememberUrl(cacheKey, id);
       return { id, kind: 'svg', ...dims };
     } catch {
       // Malformed base64 payload despite an svg-looking mime type: fall through to the raster/warning paths below.
@@ -96,18 +114,25 @@ export async function assetFromUrl(url: string, ctx: MediaContext, origin: Image
     }
   }
   if (fetched) {
-    const dims = fallbackImg && fallbackImg.naturalWidth > 0
-      ? { width: fallbackImg.naturalWidth, height: fallbackImg.naturalHeight }
-      : await decodeImageSize(fetched.mime, fetched.data, ctx.doc);
-    const id = ctx.store.addImage({ mime: fetched.mime, data: fetched.data, width: dims.width, height: dims.height, origin });
-    ctx.store.rememberUrl(url, id);
-    return { id, kind: 'image', ...dims };
+    const decoded = await loadImageFromData(fetched.mime, fetched.data, ctx.doc);
+    const natural = decoded && decoded.naturalWidth > 0
+      ? { width: decoded.naturalWidth, height: decoded.naturalHeight }
+      : fallbackImg && fallbackImg.naturalWidth > 0
+        ? { width: fallbackImg.naturalWidth, height: fallbackImg.naturalHeight }
+        : { width: 0, height: 0 };
+    const encoded = ctx.quality.density > 0 && decoded && natural.width > 0
+      ? encodeRaster(decoded, targetRasterSize(natural, display ?? null, ctx.quality.density), ctx.doc, ctx.quality.jpegQuality)
+      : null;
+    const stored = chooseStoredRaster(fetched, encoded, natural);
+    const id = ctx.store.addImage({ mime: stored.mime, data: stored.data, width: stored.width, height: stored.height, origin });
+    ctx.store.rememberUrl(cacheKey, id);
+    return { id, kind: 'image', width: stored.width, height: stored.height };
   }
   if (fallbackImg && fallbackImg.naturalWidth > 0) {
     const png = drawToPng(fallbackImg, fallbackImg.naturalWidth, fallbackImg.naturalHeight, ctx.doc);
     if (png) {
       const id = ctx.store.addImage({ mime: 'image/png', data: png.data, width: png.width, height: png.height, origin });
-      ctx.store.rememberUrl(url, id);
+      ctx.store.rememberUrl(cacheKey, id);
       return { id, kind: 'image', width: png.width, height: png.height };
     }
   }
@@ -115,17 +140,28 @@ export async function assetFromUrl(url: string, ctx: MediaContext, origin: Image
   return null;
 }
 
-export async function videoAsset(video: HTMLVideoElement, ctx: MediaContext, captureFrames: boolean): Promise<(LoadedAsset & { label: string }) | { id: null; label: string }> {
+export async function videoAsset(
+  video: HTMLVideoElement,
+  ctx: MediaContext,
+  captureFrames: boolean,
+  display?: Size,
+): Promise<(LoadedAsset & { label: string }) | { id: null; label: string }> {
   if (captureFrames && video.readyState >= 2 && video.videoWidth > 0) {
-    const png = drawToPng(video, video.videoWidth, video.videoHeight, ctx.doc);
-    if (png) {
-      const id = ctx.store.addImage({ mime: 'image/png', data: png.data, width: png.width, height: png.height, origin: 'video-frame' });
-      return { id, kind: 'image', width: png.width, height: png.height, label: '(video)' };
+    const natural = { width: video.videoWidth, height: video.videoHeight };
+    // Video frames are photographic, so PNG was the worst possible choice: five of them
+    // accounted for 5.9 MB of a measured layrd.pro capture.
+    const png = ctx.quality.density > 0 ? null : drawToPng(video, natural.width, natural.height, ctx.doc);
+    const frame = ctx.quality.density > 0
+      ? encodeRaster(video, targetRasterSize(natural, display ?? null, ctx.quality.density), ctx.doc, ctx.quality.jpegQuality)
+      : png && { mime: 'image/png', ...png };
+    if (frame) {
+      const id = ctx.store.addImage({ mime: frame.mime, data: frame.data, width: frame.width, height: frame.height, origin: 'video-frame' });
+      return { id, kind: 'image', width: frame.width, height: frame.height, label: '(video)' };
     }
     ctx.warnings.push(`Video frame capture was blocked (cross-origin video): ${video.currentSrc.slice(0, 160)}`);
   }
   if (video.poster) {
-    const poster = await assetFromUrl(video.poster, ctx, 'video-poster');
+    const poster = await assetFromUrl(video.poster, ctx, 'video-poster', undefined, display);
     if (poster) return { ...poster, label: '(video poster)' };
   }
   return { id: null, label: '(video, frame unavailable)' };
