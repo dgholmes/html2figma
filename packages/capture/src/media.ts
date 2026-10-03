@@ -1,4 +1,4 @@
-import { chooseStoredRaster, encodeRaster, targetRasterSize, type ImageQuality, type Size } from './optimize';
+import { chooseStoredRaster, encodeRaster, shouldReencode, targetRasterSize, type ImageQuality, type Size } from './optimize';
 import type { ImageAsset } from '@h2f/schema';
 import type { AssetStore } from './assets';
 
@@ -6,7 +6,20 @@ export const MAX_RASTER = 4096;
 
 export interface AssetLoader { fetchAsBase64(url: string): Promise<{ mime: string; data: string } | null> }
 export interface MediaContext { doc: Document; store: AssetStore; loader: AssetLoader; warnings: string[]; quality: ImageQuality }
-export interface LoadedAsset { id: string; kind: 'image' | 'svg'; width: number; height: number }
+export interface LoadedAsset {
+  id: string;
+  kind: 'image' | 'svg';
+  /** Size of the bytes actually stored, which optimization may have reduced. */
+  width: number;
+  height: number;
+  /**
+   * The source's intrinsic CSS size. Placement maths (background-position, background-size,
+   * object-fit) is defined against this, not against whatever resolution we chose to store —
+   * conflating the two sends a sprite's crop window outside its own sheet.
+   */
+  naturalWidth: number;
+  naturalHeight: number;
+}
 
 export function parseDataUrl(url: string): { mime: string; data: string } | null {
   const m = /^data:([^;,]+)?((?:;[^;,]+)*),(.*)$/s.exec(url);
@@ -94,7 +107,8 @@ export async function assetFromUrl(
   const cachedId = ctx.store.lookupUrl(cacheKey);
   if (cachedId) {
     const a = ctx.store.get(cachedId)!;
-    return { id: cachedId, kind: a.kind, width: a.width, height: a.height };
+    const nat = ctx.store.lookupNatural(cachedId) ?? { width: a.width, height: a.height };
+    return { id: cachedId, kind: a.kind, width: a.width, height: a.height, naturalWidth: nat.width, naturalHeight: nat.height };
   }
   let fetched: { mime: string; data: string } | null = null;
   if (url.startsWith('data:')) fetched = parseDataUrl(url);
@@ -107,33 +121,45 @@ export async function assetFromUrl(
       const dims = svgIntrinsicSize(svg) ?? { width: fallbackImg?.naturalWidth || 0, height: fallbackImg?.naturalHeight || 0 };
       const id = ctx.store.addSvg(svg, dims.width, dims.height);
       ctx.store.rememberUrl(cacheKey, id);
-      return { id, kind: 'svg', ...dims };
+      ctx.store.rememberNatural(id, dims);
+      return { id, kind: 'svg', ...dims, naturalWidth: dims.width, naturalHeight: dims.height };
     } catch {
       // Malformed base64 payload despite an svg-looking mime type: fall through to the raster/warning paths below.
       fetched = null;
     }
   }
   if (fetched) {
-    const decoded = await loadImageFromData(fetched.mime, fetched.data, ctx.doc);
+    const skipDecode = ctx.quality.density <= 0 && !!fallbackImg && fallbackImg.naturalWidth > 0;
+    const decoded = skipDecode ? null : await loadImageFromData(fetched.mime, fetched.data, ctx.doc);
     const natural = decoded && decoded.naturalWidth > 0
       ? { width: decoded.naturalWidth, height: decoded.naturalHeight }
       : fallbackImg && fallbackImg.naturalWidth > 0
         ? { width: fallbackImg.naturalWidth, height: fallbackImg.naturalHeight }
         : { width: 0, height: 0 };
-    const encoded = ctx.quality.density > 0 && decoded && natural.width > 0
-      ? encodeRaster(decoded, targetRasterSize(natural, display ?? null, ctx.quality.density), ctx.doc, ctx.quality.jpegQuality)
+    const target = natural.width > 0 ? targetRasterSize(natural, display ?? null, ctx.quality.density) : null;
+    const encoded = decoded && target && shouldReencode(fetched.mime, natural, target, ctx.quality.density)
+      ? encodeRaster(decoded, target, ctx.doc, ctx.quality.jpegQuality)
       : null;
     const stored = chooseStoredRaster(fetched, encoded, natural);
     const id = ctx.store.addImage({ mime: stored.mime, data: stored.data, width: stored.width, height: stored.height, origin });
     ctx.store.rememberUrl(cacheKey, id);
-    return { id, kind: 'image', width: stored.width, height: stored.height };
+    ctx.store.rememberNatural(id, natural);
+    return { id, kind: 'image', width: stored.width, height: stored.height, naturalWidth: natural.width, naturalHeight: natural.height };
   }
   if (fallbackImg && fallbackImg.naturalWidth > 0) {
-    const png = drawToPng(fallbackImg, fallbackImg.naturalWidth, fallbackImg.naturalHeight, ctx.doc);
+    // blob: URLs, failed fetches and oversized responses land here. Without the same
+    // optimization this path alone would put a page's worth of natural-size PNGs back.
+    const natural = { width: fallbackImg.naturalWidth, height: fallbackImg.naturalHeight };
+    const target = targetRasterSize(natural, ctx.quality.density > 0 ? display ?? null : null, ctx.quality.density);
+    const drawn = ctx.quality.density > 0
+      ? encodeRaster(fallbackImg, target, ctx.doc, ctx.quality.jpegQuality)
+      : null;
+    const png = drawn ?? (() => { const p = drawToPng(fallbackImg, natural.width, natural.height, ctx.doc); return p && { mime: 'image/png', ...p }; })();
     if (png) {
-      const id = ctx.store.addImage({ mime: 'image/png', data: png.data, width: png.width, height: png.height, origin });
+      const id = ctx.store.addImage({ mime: png.mime, data: png.data, width: png.width, height: png.height, origin });
       ctx.store.rememberUrl(cacheKey, id);
-      return { id, kind: 'image', width: png.width, height: png.height };
+      ctx.store.rememberNatural(id, natural);
+      return { id, kind: 'image', width: png.width, height: png.height, naturalWidth: natural.width, naturalHeight: natural.height };
     }
   }
   ctx.warnings.push(`Could not load image: ${url.slice(0, 160)}`);
@@ -156,7 +182,8 @@ export async function videoAsset(
       : png && { mime: 'image/png', ...png };
     if (frame) {
       const id = ctx.store.addImage({ mime: frame.mime, data: frame.data, width: frame.width, height: frame.height, origin: 'video-frame' });
-      return { id, kind: 'image', width: frame.width, height: frame.height, label: '(video)' };
+      ctx.store.rememberNatural(id, natural);
+      return { id, kind: 'image', width: frame.width, height: frame.height, naturalWidth: natural.width, naturalHeight: natural.height, label: '(video)' };
     }
     ctx.warnings.push(`Video frame capture was blocked (cross-origin video): ${video.currentSrc.slice(0, 160)}`);
   }
@@ -172,7 +199,7 @@ export function canvasAsset(canvas: HTMLCanvasElement, ctx: MediaContext): Loade
     const data = canvas.toDataURL('image/png').split(',')[1];
     if (!data) return null;
     const id = ctx.store.addImage({ mime: 'image/png', data, width: canvas.width, height: canvas.height, origin: 'canvas' });
-    return { id, kind: 'image', width: canvas.width, height: canvas.height };
+    return { id, kind: 'image', width: canvas.width, height: canvas.height, naturalWidth: canvas.width, naturalHeight: canvas.height };
   } catch {
     ctx.warnings.push('A canvas element could not be read (tainted by cross-origin content).');
     return null;

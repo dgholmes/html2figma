@@ -78,6 +78,15 @@ check('media: opaque photo re-encoded as jpeg', bigAsset?.mime === 'image/jpeg',
 check('media: oversized photo payload shrank by >10x', bigAsset && bigAsset.data.length * 10 < 2400 * 1600,
   `${(bigAsset?.data.length / 1024).toFixed(0)} kB`);
 
+// The sprite's crop must stay expressed against the sheet's natural 2000x2000, not the size
+// it happens to be stored at, or the 24x24 window falls outside the image entirely.
+const sprite = byName(media, /^div#sprite/)[0];
+const spriteCrop = sprite?.fills.find((f) => f.type === 'image' && f.scaleMode === 'crop');
+check('media: sprite crop uses the sheet natural size', !!spriteCrop && Math.abs(spriteCrop.transform[0][2] - 0.05) < 0.005,
+  `offset ${spriteCrop?.transform?.[0]?.[2]}`);
+check('media: sprite crop window stays inside the image', !!spriteCrop && spriteCrop.transform[0][2] < 1 && spriteCrop.transform[1][2] < 1,
+  `x ${spriteCrop?.transform?.[0]?.[2]}, y ${spriteCrop?.transform?.[1]?.[2]}`);
+
 await browser.close();
 server.close();
 if (failures.length) { console.error(`\n${failures.length} check(s) failed`); process.exit(1); }

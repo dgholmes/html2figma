@@ -57,6 +57,16 @@ export function canvasHasAlpha(ctx: CanvasRenderingContext2D, width: number, hei
   }
 }
 
+/** Already-compressed formats: recompressing one at the same size is lossy for no real gain. */
+const LOSSY_SOURCE = /^image\/(jpeg|webp|avif)$/;
+
+/** Whether re-encoding is worth attempting at all for this source at this target. */
+export function shouldReencode(mime: string, natural: Size, target: Size, density: number): boolean {
+  if (density <= 0) return false;
+  const sameSize = target.width >= natural.width && target.height >= natural.height;
+  return !(sameSize && LOSSY_SOURCE.test(mime));
+}
+
 /**
  * Pick what actually gets stored. Re-encoding only wins when it produces fewer bytes —
  * an already-small or already-optimal image would otherwise be made larger by a round trip

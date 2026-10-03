@@ -97,7 +97,8 @@ async function backgroundFills(cs: CSSStyleDeclaration, geo: Geometry, ctx: Walk
 
 function imagePaintForBackground(layer: ReturnType<typeof parseBackgroundLayers>[number], asset: LoadedAsset, geo: Geometry): Paint {
   const repeat = /\brepeat\b|repeat-x|repeat-y|space|round/.test(layer.repeat) && !/^no-repeat( no-repeat)?$/.test(layer.repeat);
-  const placement = backgroundPlacement(layer, geo.width, geo.height, asset.width, asset.height);
+  // Placement is defined against the source's intrinsic size, never the stored resolution.
+  const placement = backgroundPlacement(layer, geo.width, geo.height, asset.naturalWidth, asset.naturalHeight);
   if (repeat) return { type: 'image', assetId: asset.id, scaleMode: 'tile', scale: asset.width ? placement.width / asset.width : 1 };
   if (layer.size === 'cover') return { type: 'image', assetId: asset.id, scaleMode: 'fill' };
   if (layer.size === 'contain') return { type: 'image', assetId: asset.id, scaleMode: 'fit' };
@@ -107,7 +108,8 @@ function imagePaintForBackground(layer: ReturnType<typeof parseBackgroundLayers>
 function imagePaintForObjectFit(asset: LoadedAsset, cs: CSSStyleDeclaration, geo: Geometry): Paint {
   const mode = scaleModeForObjectFit(cs.objectFit || 'fill');
   if (mode !== 'crop') return { type: 'image', assetId: asset.id, scaleMode: mode };
-  const placement = { x: (geo.width - asset.width) / 2, y: (geo.height - asset.height) / 2, width: asset.width || geo.width, height: asset.height || geo.height };
+  // object-fit: none paints the image at its intrinsic size, centred — again independent of what we stored.
+  const placement = { x: (geo.width - asset.naturalWidth) / 2, y: (geo.height - asset.naturalHeight) / 2, width: asset.naturalWidth || geo.width, height: asset.naturalHeight || geo.height };
   return { type: 'image', assetId: asset.id, scaleMode: 'crop', transform: cropTransform(placement, geo.width, geo.height) };
 }
 

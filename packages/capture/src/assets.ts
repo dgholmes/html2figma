@@ -14,6 +14,8 @@ export function hashString(s: string): string {
 export class AssetStore {
   private readonly assets = new Map<string, Asset>();
   private readonly byUrl = new Map<string, string>();
+  /** Intrinsic source size per asset, kept because optimization may store fewer pixels. */
+  private readonly naturalById = new Map<string, { width: number; height: number }>();
   private size = 0;
 
   addImage(input: Omit<ImageAsset, 'id' | 'kind'>): string {
@@ -35,6 +37,8 @@ export class AssetStore {
   }
 
   rememberUrl(url: string, id: string): void { this.byUrl.set(url, id); }
+  rememberNatural(id: string, size: { width: number; height: number }): void { this.naturalById.set(id, size); }
+  lookupNatural(id: string): { width: number; height: number } | undefined { return this.naturalById.get(id); }
   lookupUrl(url: string): string | undefined { return this.byUrl.get(url); }
   get(id: string): Asset | undefined { return this.assets.get(id); }
   toRecord(): Record<string, Asset> { return Object.fromEntries(this.assets); }

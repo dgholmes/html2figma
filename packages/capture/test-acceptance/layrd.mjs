@@ -210,7 +210,7 @@ check('oklch dark background resolved (waitlist)', !!waitColor && waitColor.r < 
 // ---- 7b: size budget ----------------------------------------------------------------------
 // Before images were stored at their display size this same page captured at 42.23 MB, of
 // which 42.09 MB was image payloads against 0.15 MB of actual layer tree; it now lands around
-// 7.4 MB. The budget guards the regression that would quietly break Copy to Figma, which has
+// 8 MB. The budget guards the regression that would quietly break Copy to Figma, which has
 // to move the whole capture through one runtime message and one clipboard write.
 const SIZE_BUDGET_MB = 12;
 const sizeMb = Buffer.byteLength(JSON.stringify(doc)) / 1048576;

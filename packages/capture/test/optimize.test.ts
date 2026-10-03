@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { IMAGE_QUALITY, canvasHasAlpha, chooseStoredRaster, encodeRaster, targetRasterSize } from '../src/optimize';
+import { IMAGE_QUALITY, canvasHasAlpha, chooseStoredRaster, encodeRaster, shouldReencode, targetRasterSize } from '../src/optimize';
 
 function stubCanvas(over: { getContext?: () => unknown; toDataURL?: (mime?: string, q?: number) => string } = {}) {
   return {
@@ -127,5 +127,27 @@ describe('chooseStoredRaster', () => {
 
   it('keeps the original when encoding was not possible', () => {
     expect(chooseStoredRaster(original, null, natural)).toEqual({ mime: 'image/jpeg', data: original.data, width: 900, height: 600 });
+  });
+});
+
+describe('shouldReencode', () => {
+  const natural = { width: 1000, height: 800 };
+
+  it('skips a same-size round trip through the canvas for already-compressed sources', () => {
+    expect(shouldReencode('image/jpeg', natural, { width: 1000, height: 800 }, 2)).toBe(false);
+    expect(shouldReencode('image/webp', natural, { width: 1000, height: 800 }, 2)).toBe(false);
+    expect(shouldReencode('image/avif', natural, { width: 1000, height: 800 }, 2)).toBe(false);
+  });
+
+  it('still re-encodes a compressed source when it is being downscaled', () => {
+    expect(shouldReencode('image/jpeg', natural, { width: 400, height: 320 }, 2)).toBe(true);
+  });
+
+  it('re-encodes PNG even at full size, because photographic PNG is the expensive case', () => {
+    expect(shouldReencode('image/png', natural, { width: 1000, height: 800 }, 2)).toBe(true);
+  });
+
+  it('never re-encodes in original mode', () => {
+    expect(shouldReencode('image/png', natural, { width: 100, height: 80 }, 0)).toBe(false);
   });
 });

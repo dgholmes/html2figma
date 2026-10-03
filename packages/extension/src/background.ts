@@ -58,8 +58,15 @@ export async function handleMessage(msg: ToBackground, deps: BackgroundDeps): Pr
       return deps.fetchAsset(msg.url);
     case 'requestCapture': {
       const tabId = (await deps.getJob()).tabId;
-      if (tabId === undefined) return { json: null };
-      try { return { json: await deps.requestCapture(tabId) }; } catch { return { json: null }; }
+      if (tabId === undefined) return { json: null, reason: 'no-capture' };
+      try {
+        const json = await deps.requestCapture(tabId);
+        // Distinguish "the page dropped it" from "the page is gone": the first is recoverable
+        // by re-capturing, the second usually means the tab navigated or closed.
+        return json ? { json } : { json: null, reason: 'no-capture' };
+      } catch (e) {
+        return { json: null, reason: 'tab-unreachable', detail: e instanceof Error ? e.message : String(e) };
+      }
     }
     case 'progress':
       await deps.setJob({ stage: msg.stage, done: msg.done, total: msg.total });

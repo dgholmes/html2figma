@@ -107,7 +107,20 @@ describe('serving Copy to Figma', () => {
   it('reports no capture when the page no longer holds one', async () => {
     const { d } = deps({ requestCapture: vi.fn(async () => null) });
     await handleMessage({ type: 'start', tabId: 3, settings: { revealAnimations: true, captureVideoFrames: true, imageQuality: 'balanced' } }, d);
-    expect(await handleMessage({ type: 'requestCapture' }, d)).toEqual({ json: null });
+    expect(await handleMessage({ type: 'requestCapture' }, d)).toEqual({ json: null, reason: 'no-capture' });
+  });
+
+  it('tells the popup the tab is unreachable rather than that the capture went missing', async () => {
+    const { d } = deps({ requestCapture: vi.fn(async () => { throw new Error('Receiving end does not exist.'); }) });
+    await handleMessage({ type: 'start', tabId: 9, settings: { revealAnimations: true, captureVideoFrames: true, imageQuality: 'balanced' } }, d);
+    expect(await handleMessage({ type: 'requestCapture' }, d)).toMatchObject({ json: null, reason: 'tab-unreachable' });
+  });
+
+  it('reports no capture when no job has run, without messaging any tab', async () => {
+    const requestCapture = vi.fn(async () => 'unused');
+    const { d } = deps({ requestCapture });
+    expect(await handleMessage({ type: 'requestCapture' }, d)).toEqual({ json: null, reason: 'no-capture' });
+    expect(requestCapture).not.toHaveBeenCalled();
   });
 
   it('marks a finished job as copyable', async () => {

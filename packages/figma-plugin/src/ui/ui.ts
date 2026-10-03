@@ -124,8 +124,15 @@ paste.addEventListener('input', () => {
   if (t.startsWith('{')) { loadText(t); paste.value = ''; return; }
   setLog('That does not look like a captured document. Click "Copy to Figma" in the extension, then paste here.', true);
 });
-// A multi-megabyte paste takes a moment to land; say so rather than looking frozen.
-paste.addEventListener('paste', () => { setProgress('Reading pasted capture…', 0, 1); });
+// Take the text straight off the clipboard event. Letting a multi-megabyte single-line value
+// land in the textarea first is a slow layout path in Chromium and freezes the plugin UI.
+paste.addEventListener('paste', (e) => {
+  const text = (e as ClipboardEvent).clipboardData?.getData('text/plain') ?? '';
+  if (!text.trim().startsWith('{')) return;
+  e.preventDefault();
+  setProgress('Reading pasted capture…', 0, 1);
+  setTimeout(() => loadText(text.trim()), 0);
+});
 paste.focus();
 importBtn.addEventListener('click', () => {
   if (!current) return;

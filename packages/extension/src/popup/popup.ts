@@ -8,8 +8,12 @@ export interface PopupElements {
   copy: HTMLButtonElement; warningsBox: HTMLDetailsElement; warningsSummary: HTMLElement; warnings: HTMLElement; error: HTMLElement; errorText: HTMLElement;
 }
 
+let lastState: JobState = { status: 'idle' };
+
 export function render(state: JobState, el: PopupElements): void {
+  lastState = state;
   const running = state.status === 'running';
+  if (running) el.copy.disabled = false;
   el.capture.disabled = running;
   el.capture.textContent = running ? 'Capturing…' : 'Capture page';
   el.status.classList.toggle('hidden', !running);
@@ -68,27 +72,50 @@ async function main(): Promise<void> {
     await send({ type: 'start', tabId: tab.id, settings: currentSettings() });
   });
   el.copy.addEventListener('click', () => {
-    const say = (text: string, revert = 2500) => {
+    if (el.copy.disabled) return;
+    const say = (text: string, revert = 3000) => {
       el.copy.textContent = text;
       if (revert) setTimeout(() => { el.copy.textContent = 'Copy to Figma'; }, revert);
     };
-    // The capture lives in the page and takes a moment to come across, which is longer than a
-    // click's user activation survives. Handing the clipboard a promise starts the write now
-    // and fills it in when the data lands, so the gesture is never lost.
+    // Refuse before the transfer rather than after it: the size is already known from the
+    // finished job, and a capture past the ceiling cannot survive the hop in the first place.
+    const known = lastState.size ?? 0;
+    if (known > COPY_LIMIT) {
+      say(`Too large to copy (${(known / 1048576).toFixed(0)} MB). Drop the downloaded file into the plugin instead.`, 8000);
+      return;
+    }
+    el.copy.disabled = true;
+    // The capture lives in the page and takes a moment to come across, which outlasts the
+    // click's user activation. Handing the clipboard a promise starts the write now and fills
+    // it in when the data lands, so the gesture is never lost.
+    let failure: string | null = null;
     const payload = (async () => {
-      const res = (await send({ type: 'requestCapture' })) as { json: string | null } | undefined;
+      const res = (await Promise.race([
+        send({ type: 'requestCapture' }),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 20000)),
+      ])) as { json: string | null; reason?: string } | undefined;
       const json = res?.json;
-      if (!json) throw new Error('The page no longer holds this capture. Re-capture, or drop the downloaded file into the plugin.');
-      if (json.length > COPY_LIMIT) throw new Error('This capture is too large to copy. Drop the downloaded file into the plugin instead.');
+      if (!json) {
+        failure = res?.reason === 'tab-unreachable'
+          ? 'That tab is gone. Re-open it and capture again, or drop the downloaded file into the plugin.'
+          : 'The page no longer holds this capture. Capture again, or drop the downloaded file into the plugin.';
+        throw new Error(failure);
+      }
       return new Blob([json], { type: 'text/plain' });
     })();
+    payload.catch(() => { failure ??= 'Copying timed out. Drop the downloaded file into the plugin instead.'; });
     say('Copying…', 0);
+    // Chrome may replace a rejected item promise with its own error, so the reason is kept
+    // aside rather than read back off whatever the clipboard throws.
     const write = typeof ClipboardItem === 'function'
       ? navigator.clipboard.write([new ClipboardItem({ 'text/plain': payload })])
       : payload.then((blob) => blob.text()).then((text) => navigator.clipboard.writeText(text));
     write.then(
-      () => say('Copied — paste into the plugin'),
-      (e: unknown) => { say(e instanceof Error ? e.message : 'Copy failed', 6000); },
+      () => { el.copy.disabled = false; say('Copied — paste into the plugin'); },
+      (e: unknown) => {
+        el.copy.disabled = false;
+        say(failure ?? (e instanceof Error ? e.message : 'Copy failed'), 8000);
+      },
     );
   });
   $('copy-error').addEventListener('click', () => navigator.clipboard.writeText(el.errorText.textContent ?? ''));

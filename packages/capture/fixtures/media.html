@@ -8,6 +8,7 @@
 <div class="box" style="background: url(&quot;data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect width='20' height='20' fill='%23000'/%3E%3C/svg%3E&quot;) repeat"></div>
 <iframe class="box" src="about:blank"></iframe>
 <img class="box" id="bigphoto" style="object-fit: cover">
+<div id="sprite" style="width: 24px; height: 24px; background-repeat: no-repeat; background-position: -100px -50px"></div>
 <script>const ctx = document.getElementById('c').getContext('2d'); ctx.fillStyle = '#0a7'; ctx.fillRect(0, 0, 240, 160); ctx.fillStyle = '#fff'; ctx.font = '32px sans-serif'; ctx.fillText('canvas', 60, 90);</script>
 <script>
   // A large opaque photo shown in a small box — the shape that made real captures enormous
@@ -23,5 +24,15 @@
     bg.fillRect((i * 131) % 2400, (i * 197) % 1600, 7, 7);
   }
   document.getElementById('bigphoto').src = big.toDataURL('image/png');
+
+  // A CSS sprite sheet: the element shows a 24x24 window at (100, 50) of a 2000x2000 image.
+  // Storing the sheet downscaled is fine, but the crop has to stay expressed against the
+  // sheet's natural size or the window lands outside the image and the icon imports blank.
+  const sheet = document.createElement('canvas');
+  sheet.width = 2000; sheet.height = 2000;
+  const sc = sheet.getContext('2d');
+  sc.fillStyle = '#eee'; sc.fillRect(0, 0, 2000, 2000);
+  sc.fillStyle = '#c00'; sc.fillRect(100, 50, 24, 24);
+  document.getElementById('sprite').style.backgroundImage = `url(${sheet.toDataURL('image/png')})`;
 </script>
 </body></html>
